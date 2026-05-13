@@ -1,3 +1,4 @@
+import copy
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,7 @@ class ProfileManager:
     def get(self) -> Dict[str, Any]:
         """Load profile from JSON file. Returns empty profile if file doesn't exist."""
         if not self.profile_path.exists():
-            return DEFAULT_PROFILE.copy()
+            return copy.deepcopy(DEFAULT_PROFILE)
         with open(self.profile_path, "r") as f:
             return json.load(f)
 
