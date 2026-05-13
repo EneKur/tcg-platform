@@ -10,18 +10,24 @@ from pydantic import model_validator
 class SteelSessionResource(ConfigurableResource):
     site_name: str
 
-    _client: Steel = None
+    _client: Optional[Steel] = None
     _session_id: Optional[str] = None
     _browser_ws_endpoint: Optional[str] = None
+    _api_key: Optional[str] = None
 
     @model_validator(mode='after')
     def check_api_key(self) -> 'SteelSessionResource':
-        if not os.getenv("STEEL_API_KEY"):
+        self._api_key = os.getenv("STEEL_API_KEY")
+        if not self._api_key:
             raise ValueError("STEEL_API_KEY environment variable is not set")
         return self
 
     def setup_for_execution(self, context: InitResourceContext) -> None:
-        self._client = Steel(steel_api_key=os.getenv("STEEL_API_KEY"))
+        self._client = Steel(steel_api_key=self._api_key)
+
+    def teardown_for_execution(self, context: InitResourceContext) -> None:
+        if self._session_id and self._client:
+            self.release_session()
 
     def create_session(self) -> str:
         for attempt in range(3):
@@ -29,7 +35,7 @@ class SteelSessionResource(ConfigurableResource):
                 session = self._client.sessions.create()
                 self._session_id = session.id
                 self._browser_ws_endpoint = (
-                    f"wss://connect.steel.dev?apiKey={os.getenv('STEEL_API_KEY')}"
+                    f"wss://connect.steel.dev?apiKey={self._api_key}"
                     f"&sessionId={session.id}"
                 )
                 return session.id
