@@ -59,6 +59,7 @@ def parse_pricecharting_html(html: str) -> list[PriceRecord]:
                 scraped_from="pricecharting",
                 source="US",
                 source_url=PRICECHARTING_CATEGORY_URL,
+                language="EN",
                 scraped_at=scraped_at,
             ))
 
@@ -73,6 +74,7 @@ def parse_pricecharting_html(html: str) -> list[PriceRecord]:
                 scraped_from="pricecharting",
                 source="US",
                 source_url=PRICECHARTING_CATEGORY_URL,
+                language="EN",
                 scraped_at=scraped_at,
             ))
 

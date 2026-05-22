@@ -1,3 +1,4 @@
+import io
 import os
 from typing import Optional
 
@@ -52,10 +53,11 @@ class MinioClientResource(ConfigurableResource):
         if not self._client:
             raise RuntimeError("MinIO client not initialized")
         try:
+            data_io = io.BytesIO(data)
             self._client.put_object(
                 bucket_name,
                 object_name,
-                data,
+                data_io,
                 length,
                 content_type=content_type,
             )
