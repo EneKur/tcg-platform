@@ -28,6 +28,7 @@ class PriceRecord(BaseModel):
     scraped_from: str
     source: str
     source_url: str
+    language: str = "EN"
     scraped_at: datetime
 
 
