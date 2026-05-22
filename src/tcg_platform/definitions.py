@@ -7,6 +7,9 @@ from tcg_platform.defs.steel_resources import (
     steel_session_pricecharting,
     steel_session_limitlesstcg,
 )
+from tcg_platform.defs.minio_resources import (
+    minio_client,
+)
 
 
 @definitions
@@ -16,5 +19,6 @@ def defs():
             "steel_session_ebay": steel_session_ebay,
             "steel_session_pricecharting": steel_session_pricecharting,
             "steel_session_limitlesstcg": steel_session_limitlesstcg,
+            "minio_client": minio_client,
         }
     )

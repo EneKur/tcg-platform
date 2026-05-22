@@ -8,12 +8,14 @@ Three data sources scraped via Steel.cloud anti-ban browser API.
 ## Architecture
 
 ```
-[data sources]     →  [bronze layer]       →  [silver layer]  →  [gold layer]
-Steel cloud APIs       Parquet (MinIO)          (future)          (future)
-                       SQLite
+[data sources]     →  [bronze layer]       →  [silver layer]       →  [gold layer]
+Steel cloud APIs       Parquet (MinIO)          LakeSail (local Spark)    (future)
+                        SQLite
 ```
 
 **Bronze layer:** Raw scraped data — unchanged from source, stored as parquet files in MinIO + tabular entries in SQLite. Idempotent (re-running produces same output, no duplicates).
+
+**Silver layer:** LakeSail-based transformations (deduplication, enrichment, type casting) — running locally as a Spark-alternative for fast, efficient in-process lakehouse processing.
 
 ## Data Sources
 
@@ -58,26 +60,27 @@ Steel cloud APIs       Parquet (MinIO)          (future)          (future)
 
 ## Milestones & Tasks
 
-### Milestone 1: Anti-Ban Infrastructure (Steel.dev)
-- [ ] **M1-T1** — Set up Steel.dev Python SDK dependency + env var (`STEEL_API_KEY`)
-- [ ] **M1-T2** — Create `steel_session` Dagster resource (session create/release, retry 3×)
-- [ ] **M1-T3** — Implement auth/profile loading from `auth/profile_{sitename}.json`
-- [ ] **M1-T4** — Session reuse via Steel Profiles API (persist cookies on close, inject on reopen)
-- [ ] ~~**M1-T5** — CAPTCHA auto-solve + retry on detection~~ → **CANCELLED** (Steel free tier doesn't include CAPTCHA solving; sites scraped are account-free)
-- [ ] **M1-T6** — Create `log/M1-T1.md` through `log/M1-T5.md` with progress docs
+### Milestone 1: Anti-Ban Infrastructure (Steel.dev → Zyte)
+- [x] ~~**M1-T1**~~ — Set up Steel.dev Python SDK dependency + env var (`STEEL_API_KEY`)
+- [x] ~~**M1-T2**~~ — Create `steel_session` Dagster resource (session create/release, retry 3×)
+- [x] ~~**M1-T3**~~ — Implement auth/profile loading from `auth/profile_{sitename}.json`
+- [x] ~~**M1-T4**~~ — Session reuse via Steel Profiles API (persist cookies on close, inject on reopen)
+- [x] ~~**M1-T5**~~ — ~~CAPTCHA auto-solve~~ → **CANCELLED** (Steel free tier doesn't include CAPTCHA solving; sites scraped are account-free)
+- [x] ~~**M1-T6**~~ — Wire SteelSession into Dagster defs
+- [x] **M1-T7** — Anti-ban connector research → **REPLACED Steel with Zyte API** (Steel sessions broken in Podman; Zyte works for eBay DE sold listings, free tier available)
 
 ### Milestone 2: Bronze Scraping Layer (per website)
-> eBay deferred to M3 (requires browser session via WebSocket — currently blocked by connectivity issue)
+> eBay M6 unblocked — Zyte API works for eBay DE sold listings (public data, no auth needed)
 
-- [ ] **M2-T1** — Scraping pipeline: PriceCharting (card catalog + prices → fact_events, event_type='price_update', scraped_from='pricecharting', source='US'/'Germany')
-- [ ] **M2-T2** — Scraping pipeline: Limitless TCG (card catalog → cardlist_dimension)
+- [x] ~~**M2-T1**~~ — Scraping pipeline: PriceCharting (card catalog + prices → fact_events, event_type='price_update', scraped_from='pricecharting', source='US'/'Germany')
+- [x] ~~**M2-T2**~~ — Scraping pipeline: Limitless TCG (card catalog → cardlist_dimension + fact_events)
 - [ ] **M2-T3** — Image download asset (Limitless TCG images → MinIO, path: `cards/{set_code}/{card_id}.jpg`)
 - [ ] **M2-T4** — Create `log/M2-T1.md` through `log/M2-T3.md` with progress docs
 
 ### Milestone 3: MinIO Integration (M3)
-- [ ] **M3-T1** — MinIO resource (connection, bucket creation)
+- [x] ~~**M3-T1**~~ — MinIO resource (connection, bucket creation)
 - [ ] **M3-T2** — Bronze parquet writer asset (cardlist + fact_events → MinIO)
-- [ ] **M3-T3** — Create `log/M3-T1.md` through `log/M3-T2.md`
+- [x] ~~**M3-T3**~~ — Create `log/M3-T1.md` through `log/M3-T2.md`
 
 ### Milestone 4: SQLite Integration (M4)
 - [ ] **M4-T1** — SQLite resource (connection management)
@@ -86,14 +89,25 @@ Steel cloud APIs       Parquet (MinIO)          (future)          (future)
 - [ ] **M4-T4** — Create `log/M4-T1.md` through `log/M4-T3.md`
 
 ### Milestone 5: Dagster Definitions (M5)
+> Partial completion — resources wired, one asset scaffolded, but no persistence (MinIO/SQLite) or schedules yet
+
 - [ ] **M5-T1** — Wire all resources and assets into `defs/` folder
 - [ ] **M5-T2** — Schedule: daily full refresh + hourly incremental (new cards only)
 - [ ] **M5-T3** — Create `log/M5-T1.md` through `log/M5-T2.md`
 
-### Milestone 6: eBay Scraping via Browser Session (M6)
-- [ ] **M6-T1** — Resolve WebSocket connectivity to `wss://connect.steel.dev`
+### Milestone 6: eBay Scraping via Zyte API (M6)
+> **UNBLOCKED:** Zyte API confirmed working — eBay DE sold listings return 200 with full HTML, 62 listings parsed successfully. Zyte free tier sufficient for development.
+
+- [ ] **M6-T1** — Create `ZyteSessionResource` for eBay (uses Zyte API instead of Steel)
 - [ ] **M6-T2** — Scraping pipeline: eBay DE (PSA grades 1-10 → fact_events, event_type='sale', scraped_from='ebay', source='ebay')
 - [ ] **M6-T3** — Create `log/M6-T1.md` through `log/M6-T2.md`
+
+### Milestone 7: Silver Layer — Lakehouse Processing (M7)
+> **Future milestone:** When bronze data is ready for transformation (bronze → silver → gold), use [LakeSail](https://github.com/lakesail/lakesail) as a local Spark-alternative for efficient in-process data processing.
+
+- [ ] **M7-T1** — Evaluate and integrate LakeSail as Spark replacement for local lakehouse processing
+- [ ] **M7-T2** — Define silver layer transformations (deduplication, enrichment, type casting)
+- [ ] **M7-T3** — Create `log/M7-T1.md` through `log/M7-T2.md`
 
 ---
 
@@ -112,24 +126,28 @@ auth/
 dagster==1.13.3
 dagster-dg-cli
 dagster-webserver
-steel-sdk>=0.17.0       # steel.dev browser API (Python SDK, not Node.js puppeteer-core)
-playwright>=1.40.0     # Python browser automation via CDP (connects to Steel cloud browser)
+steel-sdk>=0.17.0       # steel.dev scrape() API for static HTML (PriceCharting)
+zyte-api>=0.5.0         # Zyte API for browser-rendered scraping (eBay DE)
+playwright>=1.40.0     # Playwright for JS-heavy sites (Limitless TCG)
+minio>=7.0.0           # S3-compatible object store client
 beautifulsoup4         # HTML parsing
 lxml                   # HTML parser (faster than built-in)
 pydantic               # schema validation
-minio                  # S3-compatible object store client
-python-dotenv          # .env file loading for STEEL_API_KEY
+python-dotenv          # .env file loading for API keys
 ```
+
+> **Future:** LakeSail (local Spark-alternative) for silver layer processing — TBD when M7 is reached.
 
 > **Note:** MinIO and SQLite integration (M3/M4) must be built before M2 scraping pipelines can write data. Order: M2 → M3 → M4 for full bronze layer completion.
 
 ## Environment Variables
 
 ```
-STEEL_API_KEY=<your-key>
+STEEL_API_KEY=<your-key>              # Steel.dev (static HTML scraping)
+ZYTE_API_KEY=<your-key>               # Zyte API (browser-rendered scraping)
 MINIO_ENDPOINT=<localhost:9000>
-MINIO_ACCESS_KEY=<key>
-MINIO_SECRET_KEY=<secret>
+MINIO_ACCESS_KEY=<minioadmin>
+MINIO_SECRET_KEY=<minioadmin>
 MINIO_BUCKET=tcg-bronze
 SQLITE_PATH=./data/tcg.db
 ```
