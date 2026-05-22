@@ -74,7 +74,7 @@ Steel cloud APIs       Parquet (MinIO)          LakeSail (local Spark)    (futur
 
 - [x] ~~**M2-T1**~~ — Scraping pipeline: PriceCharting (card catalog + prices → fact_events, event_type='price_update', scraped_from='pricecharting', source='US'/'Germany')
 - [x] ~~**M2-T2**~~ — Scraping pipeline: Limitless TCG (card catalog → cardlist_dimension + fact_events)
-- [ ] **M2-T3** — Image download asset (Limitless TCG images → MinIO, path: `cards/{set_code}/{card_id}.jpg`)
+- [x] ~~**M2-T3**~~ — Image download asset (Limitless TCG images → MinIO, path: `cards/{set_code}/{card_id}.webp`)
 - [ ] **M2-T4** — Create `log/M2-T1.md` through `log/M2-T3.md` with progress docs
 
 ### Milestone 3: MinIO Integration (M3)
