@@ -232,3 +232,46 @@ def normalize_title(title: str) -> str:
     title = _NORM_PAREN_RE.sub("", title)
     title = _NORM_BRACKET_RE.sub("", title)
     return title.strip()
+
+
+def parse_listing_page(html: str, url: str, scraped_at: datetime) -> dict:
+    """Parse a full eBay item page into a listing row dict."""
+    title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    raw_title = title_match.group(1).strip() if title_match else ""
+    raw_title = re.sub(r"\s*-\s*eBay$", "", raw_title)
+    title = raw_title
+
+    price_match = re.search(r'data-testid="x-price-primary".*?<span[^>]*>([^<]+)</span>', html, re.DOTALL)
+    price_text = price_match.group(1).strip() if price_match else ""
+    price = extract_price(price_text)
+    currency = detect_currency(price_text, url)
+
+    norm_title = normalize_title(title)
+    card_id = extract_card_id(norm_title)
+    card_version = extract_card_version(title, card_id)
+
+    sold_date = parse_sold_date(html)
+
+    language = detect_language(title)
+
+    thumbnail_url = extract_thumbnail_url(html)
+
+    item_id_match = re.search(r"/itm/(\d+)", url)
+    item_id = item_id_match.group(1) if item_id_match else ""
+
+    return {
+        "item_id": item_id,
+        "source_url": url,
+        "scraped_at": scraped_at.isoformat() if hasattr(scraped_at, "isoformat") else str(scraped_at),
+        "region": "US",
+        "card_id": card_id,
+        "card_version": card_version,
+        "title": title,
+        "price": price,
+        "currency": currency,
+        "sold_date": sold_date,
+        "language": language,
+        "html_payload": html.encode("utf-8", errors="replace"),
+        "thumbnail_url": thumbnail_url,
+        "image_path": "",
+    }
