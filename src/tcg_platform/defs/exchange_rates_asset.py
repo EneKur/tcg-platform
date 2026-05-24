@@ -3,7 +3,7 @@ import requests
 from datetime import datetime
 
 
-@dg.asset
+@dg.asset(required_resource_keys={"currency_rates_db"})
 def exchange_rates(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     rates_db = context.resources.currency_rates_db
 
