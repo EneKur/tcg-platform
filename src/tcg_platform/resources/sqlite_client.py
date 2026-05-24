@@ -71,6 +71,18 @@ class SqliteClientResource(ConfigurableResource):
             CREATE INDEX IF NOT EXISTS idx_fact_events_sold_date
                 ON fact_events(sold_date);
         """)
+        try:
+            self._conn.execute(
+                "ALTER TABLE fact_events ADD COLUMN image_url TEXT"
+            )
+        except Exception:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE fact_events ADD COLUMN local_image_path TEXT"
+            )
+        except Exception:
+            pass
         self._conn.commit()
 
     def execute(

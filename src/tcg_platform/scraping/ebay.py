@@ -51,6 +51,7 @@ _DATE_RE_ENGLISH = re.compile(
 _PRICE_RE = re.compile(r"data-testid=\"x-price-primary\".*?<span[^>]*>([^<]+)</span>", re.DOTALL)
 _TITLE_RE = re.compile(r"<h1[^>]*>.*?<span[^>]*>(.*?)</span>", re.DOTALL)
 _LISTING_LINK_RE = re.compile(r"href=\"(https://(?:www\.)?ebay\.\w+/itm/\d+[^\"]*)\"")
+_IMAGE_RE = re.compile(r'"image":"(https://i\.ebayimg\.com/[^"]+)"')
 
 _MONTHS_DE = {
     "januar": 1, "februar": 2, "märz": 3, "april": 4,
@@ -129,6 +130,11 @@ def _is_proxy(title: str) -> bool:
 def _extract_item_id(url: str) -> str:
     match = _ITEM_ID_RE.search(url)
     return match.group(1) if match else url
+
+
+def extract_item_image_url(html: str) -> str | None:
+    match = _IMAGE_RE.search(html)
+    return match.group(1) if match else None
 
 
 def parse_ebay_item_page(
