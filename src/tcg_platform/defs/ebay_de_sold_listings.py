@@ -1,25 +1,33 @@
 import dagster as dg
-
+import re
 from datetime import datetime, timezone
 
 from tcg_platform.scraping.ebay import (
+    extract_item_image_url,
     parse_ebay_item_page,
     scrape_ebay_listings,
 )
+from tcg_platform.scraping.ebay_image import (
+    download_and_save_image,
+    image_exists_in_minio,
+)
+
+
+_ITEM_ID_RE = re.compile(r"/itm/(\d+)")
+
+
+def _extract_item_id(url: str) -> str:
+    match = _ITEM_ID_RE.search(url)
+    return match.group(1) if match else url
 
 
 @dg.asset(
-    required_resource_keys={"zyte_client", "sqlite_client_de"},
+    required_resource_keys={"zyte_client", "sqlite_client_de", "minio_client"},
 )
 def ebay_de_sold_listings(context: dg.AssetExecutionContext) -> list:
-    """Scrape NEW sold One Piece TCG listings from eBay DE since last run.
-
-    Fetches all known item IDs from fact_events, then paginates the search results
-    page by page yielding only URLs with new IDs — stops when it hits the newest
-    entry already in the DB.
-    """
     zyte_client = context.resources.zyte_client
     sqlite_client = context.resources.sqlite_client_de
+    minio_client = context.resources.minio_client
 
     already_seen = sqlite_client.get_seen_ebay_item_ids()
     context.log.info(f"Known item IDs in DE DB: {len(already_seen)}")
@@ -46,6 +54,20 @@ def ebay_de_sold_listings(context: dg.AssetExecutionContext) -> list:
             if not html:
                 continue
             parsed = parse_ebay_item_page(html, item_url, scraped_at, "DE")
+            if not parsed:
+                continue
+
+            item_id = _extract_item_id(item_url)
+            image_url = extract_item_image_url(html)
+
+            image_path = None
+            if not image_exists_in_minio(minio_client, item_id, "DE"):
+                image_path = download_and_save_image(item_id, "DE", html, minio_client)
+
+            for rec in parsed:
+                rec.image_url = image_url
+                rec.local_image_path = image_path
+
             records.extend(parsed)
         except Exception as e:
             context.log.warning(f"Failed to scrape {item_url}: {e}")
