@@ -30,6 +30,8 @@ class PriceRecord(BaseModel):
     source_url: str
     language: str = "EN"
     scraped_at: datetime
+    image_url: Optional[str] = None
+    local_image_path: Optional[str] = None
 
 
 class ImageRecord(BaseModel):
