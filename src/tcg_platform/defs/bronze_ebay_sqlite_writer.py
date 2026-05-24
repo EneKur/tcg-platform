@@ -23,6 +23,8 @@ def _write_records(sqlite_client, records: list) -> int:
             r.source_url,
             r.language,
             r.scraped_at.isoformat() if hasattr(r.scraped_at, "isoformat") else str(r.scraped_at),
+            r.image_url or "",
+            r.local_image_path or "",
         )
         for r in records
         if not _is_proxy_title(r.card_id)
@@ -32,8 +34,9 @@ def _write_records(sqlite_client, records: list) -> int:
             """
             INSERT OR IGNORE INTO fact_events
                 (card_id, card_version, event_type, price, currency,
-                 sold_date, scraped_from, source, source_url, language, scraped_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sold_date, scraped_from, source, source_url, language, scraped_at,
+                 image_url, local_image_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
