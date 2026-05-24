@@ -4,7 +4,6 @@ requires-python = ">=3.10,<3.15"
 version = "0.1.0"
 dependencies = [
     "dagster==1.13.3",
-    "steel-sdk>=0.17.0",
     "playwright>=1.40.0",
     "minio>=7.0.0",
     "pyarrow>=14.0.0",
@@ -13,12 +12,14 @@ dependencies = [
     "pydantic>=2.0.0",
     "beautifulsoup4>=4.14.3",
     "lxml>=6.1.0",
+    "zyte-api>=0.10.0",
 ]
 
 [dependency-groups]
 dev = [
     "dagster-dg-cli",
     "dagster-webserver",
+    "pytest>=9.0.3",
 ]
 
 [build-system]
