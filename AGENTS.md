@@ -61,14 +61,47 @@ If you genuinely think a convention is harmful, surface it. Don't fork silently.
 "Tests pass" is wrong if any were skipped.
 Default to surfacing uncertainty, not hiding it.
 
-## Branch Naming Convention (Session Routine)
 
-At the start of each working session:
-1. Create a feature branch named `{YYYY-MM-DD}-{task-id}` (e.g., `2026-05-22-M3-T1`)
-2. All work for that session happens on that branch
-3. When session ends, branch is ready for PR/review
+## Git Cycle — Session Workflow
 
-This ensures a clean, stable `main` branch between sessions.
+Rule 13 — Branching is mandatory
+Never work on main. Not for fixes, not for docs, not for "just one small thing."
+---
+Rule 14 — Start of Session: Sync main
+git checkout main && git pull origin main
+Verify local main === remote main (fast-forward, no merges).
+If they diverge, stop and ask why before proceeding.
+---
+Rule 15 — Create Session Branch
+git checkout -b YYYY-MM-DD-{task-id}
+Use the task ID from the current work. Branch name must match YYYY-MM-DD-{task-id} format.
+---
+Rule 16 — Work on the Branch
+Commit frequently. Every task, every fix, every meaningful change:
+git add <changed files>
+git commit -m "feat|fix|chore|docs: brief description"
+Never git commit -am (skip staging). Always review what you're committing.
+---
+Rule 17 — End of Session: Verify Before Push
+Before pushing the branch:
+# 1. Tests pass
+pytest tests/ -v
+# 2. Dagster definitions load cleanly
+python -c "from tcg_platform.definitions import defs; print('OK')"
+# 3. No untracked garbage in working tree
+git status --porcelain  # should be empty or only planned files
+If anything fails — fix it before pushing.
+---
+Rule 18 — Push Branch to Remote
+git push origin YYYY-MM-DD-{task-id}
+This creates the remote branch but never touches main.
+---
+Rule 19 — Merge to main is Human-Driven
+When ready to integrate:
+- Create a PR on GitHub, or
+- Ask the human to merge, or
+- git checkout main && git merge --no-ff YYYY-MM-DD-{task-id} locally, then push main
+Force-pushing main is never allowed without explicit human consent.
 
 ## Session Log
 
