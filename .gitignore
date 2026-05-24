@@ -204,3 +204,9 @@ __marimo__/
 
 # Steel auth profiles
 auth/
+
+# Dagster temp directories
+.tmp_dagster_home_*/
+
+# macOS
+.DS_Store
