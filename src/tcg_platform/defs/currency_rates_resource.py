@@ -11,5 +11,10 @@ load_dotenv()
 
 @resource
 def currency_rates_db(init_context: InitResourceContext):
-    db_path = os.getenv("CURRENCY_RATES_DB", "./data/currency_rates.db")
+    db_path = os.getenv("CURRENCY_RATES_DB")
+    if not db_path:
+        raise ValueError(
+            "CURRENCY_RATES_DB environment variable is not set. "
+            "Set it to a path like ./data/currency_rates.db"
+        )
     return CurrencyRatesDB(db_path=db_path)
