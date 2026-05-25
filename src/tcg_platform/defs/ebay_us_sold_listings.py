@@ -9,11 +9,11 @@ from tcg_platform.scraping.ebay import (
 
 
 @dg.asset(
-    required_resource_keys={"zyte_client", "sqlite_client_us"},
+    required_resource_keys={"zyte_session_resource", "sqlite_client_us"},
 )
 def ebay_us_sold_listings(context: dg.AssetExecutionContext) -> list:
     """Scrape NEW sold One Piece TCG listings from eBay US since last run."""
-    zyte_client = context.resources.zyte_client
+    zyte_client = context.resources.zyte_session_resource
     sqlite_client = context.resources.sqlite_client_us
 
     already_seen = sqlite_client.get_seen_ebay_item_ids()
