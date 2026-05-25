@@ -1,3 +1,4 @@
+import io
 import requests
 from minio.error import S3Error
 

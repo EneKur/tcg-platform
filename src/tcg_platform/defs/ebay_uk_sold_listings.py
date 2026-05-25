@@ -22,10 +22,10 @@ def _extract_item_id(url: str) -> str:
 
 
 @dg.asset(
-    required_resource_keys={"zyte_client", "sqlite_client_uk", "minio_client"},
+    required_resource_keys={"zyte_session_resource", "sqlite_client_uk", "minio_client"},
 )
 def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
-    zyte_client = context.resources.zyte_client
+    zyte_client = context.resources.zyte_session_resource
     sqlite_client = context.resources.sqlite_client_uk
     minio_client = context.resources.minio_client
 
@@ -33,7 +33,7 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
     context.log.info(f"Known item IDs in UK DB: {len(already_seen)}")
 
     new_item_urls = []
-    for item_url in scrape_ebay_listings(zyte_client, "UK", already_seen):
+    for item_url in scrape_ebay_listings(zyte_client, "UK", already_seen, max_records=100):
         new_item_urls.append(item_url)
 
     context.log.info(f"New UK items to scrape: {len(new_item_urls)}")
@@ -60,9 +60,12 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
             item_id = _extract_item_id(item_url)
             image_url = extract_item_image_url(html)
 
+            object_path = f"sold_images/UK/{item_id}.jpg"
             image_path = None
             if not image_exists_in_minio(minio_client, item_id, "UK"):
                 image_path = download_and_save_image(item_id, "UK", html, minio_client)
+            else:
+                image_path = object_path
 
             for rec in parsed:
                 rec.image_url = image_url

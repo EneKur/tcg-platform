@@ -24,14 +24,25 @@ class MinioClientResource(ConfigurableResource):
             raise ValueError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set")
         return self
 
+    def create_resource(self, context: InitResourceContext) -> "MinioClientResource":
+        self.setup_for_execution(context)
+        return self
+
     def setup_for_execution(self, context: InitResourceContext) -> None:
+        import sys
+        sys.stderr.write(f"[MinioClientResource] setup_for_execution called. endpoint={self.endpoint} bucket={self.bucket_name}\n")
+        sys.stderr.flush()
         self._client = Minio(
             self.endpoint,
             access_key=self.access_key,
             secret_key=self.secret_key,
             secure=self.secure,
         )
+        sys.stderr.write(f"[MinioClientResource] _client set to: {self._client}\n")
+        sys.stderr.flush()
         self._ensure_bucket_exists()
+        sys.stderr.write(f"[MinioClientResource] setup done. _client={getattr(self, '_client', 'MISSING')}\n")
+        sys.stderr.flush()
 
     def _ensure_bucket_exists(self) -> None:
         if not self._client:
