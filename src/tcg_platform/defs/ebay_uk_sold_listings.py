@@ -22,10 +22,10 @@ def _extract_item_id(url: str) -> str:
 
 
 @dg.asset(
-    required_resource_keys={"zyte_client", "sqlite_client_uk", "minio_client"},
+    required_resource_keys={"zyte_session_resource", "sqlite_client_uk", "minio_client"},
 )
 def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
-    zyte_client = context.resources.zyte_client
+    zyte_client = context.resources.zyte_session_resource
     sqlite_client = context.resources.sqlite_client_uk
     minio_client = context.resources.minio_client
 
