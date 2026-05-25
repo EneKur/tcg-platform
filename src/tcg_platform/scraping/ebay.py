@@ -10,7 +10,7 @@ EBAY_REGION_CONFIGS = {
     "DE": {
         "base_url": (
             "https://www.ebay.de/sch/i.html"
-            "?_nkw=One+Piece+TCG+&_sacat=0&_from=R40&_sop=13&LH_Sold=1"
+            "?_nkw=PSA+One+Piece+TCG&_sacat=0&_from=R40&_sop=13&LH_Sold=1"
         ),
         "currency": "EUR",
         "date_format": "german",
@@ -20,7 +20,7 @@ EBAY_REGION_CONFIGS = {
     "UK": {
         "base_url": (
             "https://www.ebay.co.uk/sch/i.html"
-            "?_nkw=One+Piece+TCG+&_sacat=0&_from=R40&_sop=13&LH_Sold=1"
+            "?_nkw=PSA+One+Piece+TCG&_sacat=0&_from=R40&_sop=13&LH_Sold=1"
         ),
         "currency": "GBP",
         "price_separator": ".",
@@ -30,7 +30,7 @@ EBAY_REGION_CONFIGS = {
     "US": {
         "base_url": (
             "https://www.ebay.com/sch/i.html"
-            "?_nkw=One+Piece+TCG+&_sacat=0&_from=R40&_sop=13&LH_Sold=1"
+            "?_nkw=PSA+One+Piece+TCG&_sacat=0&_from=R40&_sop=13&LH_Sold=1"
         ),
         "currency": "USD",
         "price_separator": ".",
@@ -50,7 +50,14 @@ _DATE_RE_ENGLISH = re.compile(
 )
 _PRICE_RE = re.compile(r"data-testid=\"x-price-primary\".*?<span[^>]*>([^<]+)</span>", re.DOTALL)
 _TITLE_RE = re.compile(r"<h1[^>]*>.*?<span[^>]*>(.*?)</span>", re.DOTALL)
-_LISTING_LINK_RE = re.compile(r"href=\"(https://(?:www\.)?ebay\.\w+/itm/\d+[^\"]*)\"")
+_LISTING_LINK_RE = re.compile(
+    r"href=\"(https://www\.ebay\.\w+/itm/\d+[^\"]*)\""
+)
+_LISTING_LINK_RE_BY_REGION = {
+    "DE": re.compile(r"href=\"(https://www\.ebay\.de/itm/\d+[^\"]*)\""),
+    "UK": re.compile(r"href=\"(https://www\.ebay\.co\.uk/itm/\d+[^\"]*)\""),
+    "US": re.compile(r"href=\"(https://www\.ebay\.com/itm/\d+[^\"]*)\""),
+}
 _IMAGE_RE = re.compile(r'"image":"(https://i\.ebayimg\.com/[^"]+)"')
 
 _MONTHS_DE = {
@@ -200,8 +207,9 @@ def _parse_english_date(html: str) -> Optional[str]:
 
 def parse_ebay_listings_page(html: str, base_url: str, region: str = "DE") -> list[tuple[str, str]]:
     """Extract item listing URLs from a search results page.
-    
+
     UK and US pages use &amp; HTML entities and have different URL structures.
+    Only yields URLs from the correct eBay domain for the region.
     """
     urls = []
 
@@ -217,7 +225,8 @@ def parse_ebay_listings_page(html: str, base_url: str, region: str = "DE") -> li
             if clean_url and clean_url not in [u for u, _ in urls]:
                 urls.append((clean_url, clean_url))
     else:
-        for match in _LISTING_LINK_RE.finditer(html):
+        pattern = _LISTING_LINK_RE_BY_REGION.get(region, _LISTING_LINK_RE)
+        for match in pattern.finditer(html):
             raw_url = match.group(1)
             clean_url = re.sub(r"\?.*", "", raw_url)
             if clean_url not in [u for u, _ in urls]:
@@ -231,12 +240,20 @@ def scrape_ebay_listings(
     region: str,
     already_seen_ids: set[str],
     max_pages: Optional[int] = None,
+    max_records: Optional[int] = None,
 ):
-    """Paginate through search results, yield new item URLs skipping known IDs."""
+    """Paginate through search results, yield new item URLs skipping known IDs.
+
+    Stops when max_pages reached, no more URLs returned, or max_records yielded.
+    """
     cfg = EBAY_REGION_CONFIGS[region]
     base_url = cfg["base_url"]
+    yielded = 0
 
     for page in range(1, (max_pages or 9999) + 1):
+        if max_records and yielded >= max_records:
+            break
+
         if page == 1:
             url = base_url
         else:
@@ -252,7 +269,7 @@ def scrape_ebay_listings(
         urls = parse_ebay_listings_page(html, base_url, region)
         if not urls:
             if page == 1:
-                continue  # page 1 sometimes returns anti-bot page, try next page
+                continue
             break
 
         page_new = []
@@ -261,7 +278,14 @@ def scrape_ebay_listings(
             if item_id not in already_seen_ids:
                 page_new.append(raw_url)
 
-        yield from page_new
+        for url in page_new:
+            yield url
+            yielded += 1
+            if max_records and yielded >= max_records:
+                break
 
         if len(urls) < 10:
+            break
+
+        if max_records and yielded >= max_records:
             break
