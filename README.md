@@ -1,6 +1,6 @@
 # TCG One Piece Card Game Data Platform
 
-Scrapes, stores, and transforms One Piece TCG sold listing data from eBay (DE, UK, US regions) and Limitless TCG, with historical exchange rates and card images.
+Scrapes, stores, and transforms One Piece TCG sold listing data from eBay (DE, UK regions) and Limitless TCG, with historical exchange rates and card images.
 
 ## Architecture
 
@@ -8,10 +8,12 @@ Scrapes, stores, and transforms One Piece TCG sold listing data from eBay (DE, U
 **Silver layer** — cleaned card IDs, normalized data (not yet implemented)
 **Gold layer** — aggregated analytics, parquet exports (not yet implemented)
 
+**Zyte API cost**: ~€0.72 per 200 requests (browser automation with retry logic). Configure via `ZYTE_API_KEY` and `ZYTE_N_CONN` (connection pool size, default 2).
+
 ## Stack
 
 - **Scraping**: Zyte API (browser automation), `requests` / BeautifulSoup
-- **Storage**: SQLite (per-region DBs), MinIO (card images), Parquet (analytics exports)
+- **Storage**: SQLite (DE + UK DBs), MinIO (card images), Parquet (analytics exports)
 - **Orchestration**: Dagster (`dg dev`)
 - **Exchange rates**: Frankfurter.app (EUR→GBP daily back to 2023-06-01)
 
@@ -43,7 +45,6 @@ Required variables:
 | `MINIO_BUCKET` | Target bucket name |
 | `SQLITE_PATH_DE` | Path to DE SQLite DB |
 | `SQLITE_PATH_UK` | Path to UK SQLite DB |
-| `SQLITE_PATH_US` | Path to US SQLite DB |
 | `CURRENCY_RATES_DB` | Path to exchange rates DB |
 
 ### 3. Start Dagster
@@ -63,10 +64,10 @@ Open http://localhost:3000 in your browser.
 | `card_version` | TEXT | Set/version (e.g. OP01, ST14) |
 | `event_type` | TEXT | Always `sale` |
 | `price` | REAL | Sale price |
-| `currency` | TEXT | EUR / GBP / USD |
+| `currency` | TEXT | EUR / GBP |
 | `sold_date` | TEXT | Sale date (YYYY-MM-DD) |
 | `scraped_from` | TEXT | Always `ebay` |
-| `source` | TEXT | Region: DE / UK / US |
+| `source` | TEXT | Region: DE / UK |
 | `source_url` | TEXT | eBay item URL |
 | `language` | TEXT | EN / JP |
 | `scraped_at` | TIMESTAMP | When the record was scraped |
@@ -104,10 +105,8 @@ Open http://localhost:3000 in your browser.
 | `exchange_rates` | Backfills EUR→GBP from Frankfurter.app |
 | `ebay_de_sold_listings` | Scrapes new DE eBay sold listings via Zyte |
 | `ebay_uk_sold_listings` | Scrapes new UK eBay sold listings via Zyte |
-| `ebay_us_sold_listings` | Scrapes new US eBay sold listings via Zyte |
 | `bronze_ebay_de_sqlite_writer` | Writes DE records to SQLite |
 | `bronze_ebay_uk_sqlite_writer` | Writes UK records to SQLite |
-| `bronze_ebay_us_sqlite_writer` | Writes US records to SQLite |
 | `bronze_cardlist_parquet` | Exports cardlist to Parquet |
 | `bronze_fact_events_parquet` | Exports fact_events to Parquet |
 | `limitless_op_cards` | Scrapes Limitless TCG card data |
