@@ -23,10 +23,12 @@ def _get_minio_config(prefix: str = "MINIO") -> dict:
 @resource
 def minio_client(init_context: InitResourceContext):
     config = _get_minio_config()
-    return MinioClientResource(**config)
+    client = MinioClientResource(**config)
+    return client.create_resource(init_context)
 
 
 @resource
 def minio_client_zyte(init_context: InitResourceContext):
     config = _get_minio_config(prefix="ZYTE_MINIO")
-    return MinioClientResource(**config)
+    client = MinioClientResource(**config)
+    return client.create_resource(init_context)

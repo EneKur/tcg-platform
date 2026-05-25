@@ -63,14 +63,3 @@ def bronze_ebay_uk_sqlite_writer(
     n = _write_records(sqlite_client, ebay_uk_sold_listings)
     context.log.info(f"Wrote {n} UK eBay records to SQLite")
     return dg.MaterializeResult(metadata={"num_records": n})
-
-
-@dg.asset
-def bronze_ebay_us_sqlite_writer(
-    context: dg.AssetExecutionContext,
-    ebay_us_sold_listings: list,
-) -> dg.MaterializeResult:
-    sqlite_client = context.resources.sqlite_client_us
-    n = _write_records(sqlite_client, ebay_us_sold_listings)
-    context.log.info(f"Wrote {n} US eBay records to SQLite")
-    return dg.MaterializeResult(metadata={"num_records": n})

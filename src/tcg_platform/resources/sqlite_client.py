@@ -18,7 +18,13 @@ class SqliteClientResource(ConfigurableResource):
             raise ValueError("SQLITE_PATH must be set")
         return self
 
+    def create_resource(self, context: InitResourceContext) -> "SqliteClientResource":
+        self.setup_for_execution(context)
+        return self
+
     def setup_for_execution(self, context: InitResourceContext) -> None:
+        if self._conn is not None:
+            return
         db_file = Path(self.db_path)
         db_file.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
