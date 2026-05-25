@@ -14,7 +14,7 @@ from tcg_platform.defs.sqlite_resources import (
     sqlite_client_us,
 )
 from tcg_platform.defs.zyte_resources import (
-    zyte_client,
+    zyte_session_resource,
 )
 
 
@@ -27,6 +27,6 @@ def defs():
             "sqlite_client_de": sqlite_client_de,
             "sqlite_client_uk": sqlite_client_uk,
             "sqlite_client_us": sqlite_client_us,
-            "zyte_client": zyte_client,
+            "zyte_session_resource": zyte_session_resource,
         }
     )
