@@ -139,11 +139,7 @@ backfill_uk_job = dg.define_asset_job(
 @dg.sensor(job=backfill_de_job, minimum_interval_seconds=60)
 def backfill_de_sensor(context: dg.SensorEvaluationContext):
     from dagster import DagsterRunStatus
-    de_runs = context.instance.get_run_ids(
-        job_name="ebay_de_pipeline",
-        limit=1,
-        cursor=context.cursor,
-    )
+    de_runs = context.instance.get_run_ids(job_name="ebay_de_pipeline", limit=1)
     if not de_runs:
         return None
     run = context.instance.get_run_by_id(de_runs[0])
@@ -155,11 +151,7 @@ def backfill_de_sensor(context: dg.SensorEvaluationContext):
 @dg.sensor(job=backfill_uk_job, minimum_interval_seconds=60)
 def backfill_uk_sensor(context: dg.SensorEvaluationContext):
     from dagster import DagsterRunStatus
-    uk_runs = context.instance.get_run_ids(
-        job_name="ebay_uk_pipeline",
-        limit=1,
-        cursor=context.cursor,
-    )
+    uk_runs = context.instance.get_run_ids(job_name="ebay_uk_pipeline", limit=1)
     if not uk_runs:
         return None
     run = context.instance.get_run_by_id(uk_runs[0])
