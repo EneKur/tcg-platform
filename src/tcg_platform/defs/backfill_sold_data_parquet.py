@@ -70,25 +70,27 @@ def _backfill_sold_data(
             partition_date = partition_date.strftime("%Y-%m-%d")
 
         record_dict = _row_to_record(row)
-        table_data = [{"event_id": record_dict["event_id"],
-                       "card_id": record_dict["card_id"],
-                       "card_version": record_dict["card_version"],
-                       "event_type": record_dict["event_type"],
-                       "price": record_dict["price"],
-                       "currency": record_dict["currency"],
-                       "sold_date": record_dict["sold_date"],
-                       "scraped_from": record_dict["scraped_from"],
-                       "source": record_dict["source"],
-                       "source_url": record_dict["source_url"],
-                       "language": record_dict["language"],
-                       "scraped_at": record_dict["scraped_at"],
-                       "image_url": record_dict["image_url"]}]
+        table_data = [{
+            "event_id": record_dict["event_id"],
+            "card_id": record_dict["card_id"],
+            "card_version": record_dict["card_version"],
+            "event_type": record_dict["event_type"],
+            "price": record_dict["price"],
+            "currency": record_dict["currency"],
+            "sold_date": record_dict["sold_date"],
+            "scraped_from": record_dict["scraped_from"],
+            "source": record_dict["source"],
+            "source_url": record_dict["source_url"],
+            "language": record_dict["language"],
+            "scraped_at": record_dict["scraped_at"],
+            "image_url": record_dict["image_url"],
+        }]
 
         import pyarrow as pa
         import pyarrow.parquet as pq
-        import io as _io
+        import io
         table = pa.Table.from_pylist(table_data)
-        buffer = _io.BytesIO()
+        buffer = io.BytesIO()
         pq.write_table(table, buffer)
         parquet_bytes = buffer.getvalue()
 
@@ -108,7 +110,7 @@ def _backfill_sold_data(
 @dg.asset(required_resource_keys={"sqlite_client_de", "minio_client"})
 def backfill_de_sold_data_parquet(
     context: dg.AssetExecutionContext,
-    bronze_ebay_de_sqlite_writer: dg.MaterializeResult,
+    bronze_ebay_de_sqlite_writer: dg.AssetOut,
 ) -> dg.MaterializeResult:
     sqlite_client_de = context.resources.sqlite_client_de
     minio_client = context.resources.minio_client
@@ -119,7 +121,7 @@ def backfill_de_sold_data_parquet(
 @dg.asset(required_resource_keys={"sqlite_client_uk", "minio_client"})
 def backfill_uk_sold_data_parquet(
     context: dg.AssetExecutionContext,
-    bronze_ebay_uk_sqlite_writer: dg.MaterializeResult,
+    bronze_ebay_uk_sqlite_writer: dg.AssetOut,
 ) -> dg.MaterializeResult:
     sqlite_client_uk = context.resources.sqlite_client_uk
     minio_client = context.resources.minio_client
