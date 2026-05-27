@@ -29,7 +29,7 @@ class SqliteClientResource(ConfigurableResource):
         db_file.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
             self.db_path,
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            detect_types=sqlite3.PARSE_COLNAMES,
         )
         self._conn.row_factory = sqlite3.Row
         self._initialize_schema()
