@@ -43,7 +43,7 @@ def _write_records(sqlite_client, records: list) -> int:
     return len(rows)
 
 
-@dg.asset
+@dg.asset(required_resource_keys={"sqlite_client_de"})
 def bronze_ebay_de_sqlite_writer(
     context: dg.AssetExecutionContext,
     ebay_de_sold_listings: list,
@@ -54,7 +54,7 @@ def bronze_ebay_de_sqlite_writer(
     return dg.MaterializeResult(metadata={"num_records": n})
 
 
-@dg.asset
+@dg.asset(required_resource_keys={"sqlite_client_uk"})
 def bronze_ebay_uk_sqlite_writer(
     context: dg.AssetExecutionContext,
     ebay_uk_sold_listings: list,
