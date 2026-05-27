@@ -18,21 +18,21 @@ from tcg_platform.defs.zyte_resources import (
 
 ebay_de_job = define_asset_job(
     name="ebay_de_pipeline",
-    selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer", "bronze_de_sold_data_parquet"],
-    description="Scrape DE eBay PSA sold listings and persist to SQLite + MinIO",
+    selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer"],
+    description="Scrape DE eBay PSA sold listings and persist to SQLite + MinIO parquet",
 )
 
 ebay_uk_job = define_asset_job(
     name="ebay_uk_pipeline",
-    selection=["ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer", "bronze_uk_sold_data_parquet"],
-    description="Scrape UK eBay PSA sold listings and persist to SQLite + MinIO",
+    selection=["ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer"],
+    description="Scrape UK eBay PSA sold listings and persist to SQLite + MinIO parquet",
 )
 
 ebay_eu_job = define_asset_job(
     name="ebay_eu_pipeline",
-    selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer", "bronze_de_sold_data_parquet",
-               "ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer", "bronze_uk_sold_data_parquet"],
-    description="Scrape DE+UK eBay PSA sold listings and persist to SQLite + MinIO",
+    selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer",
+               "ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer"],
+    description="Scrape DE+UK eBay PSA sold listings and persist to SQLite + MinIO parquet",
 )
 
 

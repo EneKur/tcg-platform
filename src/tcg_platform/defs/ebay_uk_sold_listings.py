@@ -11,6 +11,7 @@ from tcg_platform.scraping.ebay_image import (
     download_and_save_image,
     image_exists_in_minio,
 )
+from tcg_platform.serialization.card_parquet import price_records_to_parquet
 
 
 _ITEM_ID_RE = re.compile(r"/itm/(\d+)")
@@ -70,6 +71,18 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
             for rec in parsed:
                 rec.image_url = image_url
                 rec.local_image_path = image_path
+
+                item_id_for_rec = _extract_item_id(rec.source_url)
+                parquet_bytes, _ = price_records_to_parquet(
+                    [rec], rec.scraped_at.strftime("%Y-%m-%d")
+                )
+                minio_client.put_object(
+                    bucket_name=minio_client.bucket_name,
+                    object_name=f"sold_data/UK/{item_id_for_rec}.parquet",
+                    data=parquet_bytes,
+                    length=len(parquet_bytes),
+                    content_type="application/parquet",
+                )
 
             records.extend(parsed)
         except Exception as e:

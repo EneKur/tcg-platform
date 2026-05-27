@@ -1,19 +1,17 @@
-# sold_data Parquet Archive — Design Spec
-
 ## Overview
 
-Archive every scraped eBay sold listing as an individual Parquet file in MinIO under `sold_data/{region}/{item_id}.parquet`. This runs as a parallel path alongside the existing SQLite writers, providing a durable raw backup and enabling incremental lakehouse reads.
+Archive every scraped eBay sold listing as an individual Parquet file in MinIO under `sold_data/{region}/{item_id}.parquet`. Parquet is written inline during scraping, alongside the image download — no separate aggregation step. SQLite writer handles the batched accumulation as before.
 
 ## Data Flow
 
 ```
-ebay_de_sold_listings ──┬──→ bronze_ebay_de_sqlite_writer ──→ SQLite
-                        │
-                        └──→ bronze_de_sold_data_parquet ──→ MinIO sold_data/DE/{item_id}.parquet
+For each scraped item_id:
+  ├─── scrape item → parse PriceRecord
+  ├─── image → MinIO sold_images/{region}/{item_id}.jpg   (already here)
+  └─── parquet → MinIO sold_data/{region}/{item_id}.parquet  (new, inline)
+  └─── pass record to sqlite_writer (batch insert)
 
-ebay_uk_sold_listings ──┬──→ bronze_ebay_uk_sqlite_writer ──→ SQLite
-                        │
-                        └──→ bronze_uk_sold_data_parquet ──→ MinIO sold_data/UK/{item_id}.parquet
+sqlite_writer accumulates records and does batch INSERT OR IGNORE to SQLite.
 ```
 
 ## Storage Structure
@@ -31,15 +29,7 @@ Uses existing `price_records_to_parquet()` from `tcg_platform/serialization/card
 
 ## Implementation
 
-- **New file:** `src/tcg_platform/defs/bronze_sold_data_parquet.py`
-- **Assets:** `bronze_de_sold_data_parquet` and `bronze_uk_sold_data_parquet`
-- **Dependencies:** `minio_client` resource (via context), input list of PriceRecords
-- **Per-record loop** extracts `item_id` from `source_url` (reuse `_extract_item_id` from ebay_DE/UK modules or import from `ebay.py`)
-- Uses existing `price_records_to_parquet([record])` for single-row parquet per item
-- **Jobs updated:** all three pipelines include new assets
-
-## Jobs
-
-- `ebay_de_pipeline` → `["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer", "bronze_de_sold_data_parquet"]`
-- `ebay_uk_pipeline` → `["ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer", "bronze_uk_sold_data_parquet"]`
-- `ebay_eu_pipeline` → all six assets
+- **Modified:** `ebay_de_sold_listings.py` and `ebay_uk_sold_listings.py` — parquet write added inline in scrape loop
+- **Removed:** `bronze_sold_data_parquet.py` — standalone parquet asset deleted (no longer needed)
+- **No new files** — writes happen in the same loop as image downloads, per-item as soon as parsed
+- **Jobs unchanged** — sqlite_writer assets still the accumulation point
