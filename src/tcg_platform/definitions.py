@@ -2,6 +2,12 @@ from pathlib import Path
 
 from dagster import Definitions, definitions, load_from_defs_folder, define_asset_job
 
+from tcg_platform.defs.backfill_sold_data_parquet import (
+    backfill_de_job,
+    backfill_uk_job,
+    backfill_de_sensor,
+    backfill_uk_sensor,
+)
 from tcg_platform.defs.currency_rates_resource import (
     currency_rates_db,
 )
@@ -19,20 +25,20 @@ from tcg_platform.defs.zyte_resources import (
 ebay_de_job = define_asset_job(
     name="ebay_de_pipeline",
     selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer"],
-    description="Scrape DE eBay PSA sold listings and persist to SQLite",
+    description="Scrape DE eBay sold listings, persist to SQLite",
 )
 
 ebay_uk_job = define_asset_job(
     name="ebay_uk_pipeline",
     selection=["ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer"],
-    description="Scrape UK eBay PSA sold listings and persist to SQLite",
+    description="Scrape UK eBay sold listings, persist to SQLite",
 )
 
 ebay_eu_job = define_asset_job(
     name="ebay_eu_pipeline",
     selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer",
                "ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer"],
-    description="Scrape DE+UK eBay PSA sold listings and persist to SQLite",
+    description="Scrape DE+UK eBay sold listings, persist to SQLite",
 )
 
 
@@ -42,7 +48,8 @@ def defs():
     return Definitions(
         assets=base.assets,
         asset_checks=base.asset_checks,
-        jobs=[ebay_de_job, ebay_uk_job, ebay_eu_job],
+        jobs=[ebay_de_job, ebay_uk_job, ebay_eu_job, backfill_de_job, backfill_uk_job],
+        sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
             "currency_rates_db": currency_rates_db,
             "minio_client": minio_client,
