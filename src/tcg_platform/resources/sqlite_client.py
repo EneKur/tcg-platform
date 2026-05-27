@@ -89,6 +89,12 @@ class SqliteClientResource(ConfigurableResource):
             )
         except Exception:
             pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE fact_events ADD COLUMN parqueted INTEGER DEFAULT 0"
+            )
+        except Exception:
+            pass
         self._conn.commit()
 
     def execute(
@@ -132,6 +138,32 @@ class SqliteClientResource(ConfigurableResource):
             if match:
                 ids.add(match.group(1))
         return ids
+
+    def get_unparqueted_fact_events(self, source_region: str) -> list[sqlite3.Row]:
+        if not self._conn:
+            raise RuntimeError("SQLite connection not initialized")
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """SELECT * FROM fact_events
+               WHERE scraped_from = 'ebay' AND source = ?
+               AND (parqueted IS NULL OR parqueted = 0)
+               ORDER BY scraped_at ASC""",
+            (source_region,),
+        )
+        return cursor.fetchall()
+
+    def mark_fact_events_parqueted(self, source_region: str) -> int:
+        if not self._conn:
+            raise RuntimeError("SQLite connection not initialized")
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """UPDATE fact_events SET parqueted = 1
+               WHERE scraped_from = 'ebay' AND source = ?
+               AND (parqueted IS NULL OR parqueted = 0)""",
+            (source_region,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     def close(self) -> None:
         if self._conn:
