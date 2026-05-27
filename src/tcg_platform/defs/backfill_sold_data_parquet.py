@@ -105,7 +105,7 @@ def _backfill_sold_data(
     return len(rows)
 
 
-@dg.asset(required_resource_keys={"sqlite_client_de", "minio_client"})
+@dg.asset
 def backfill_de_sold_data_parquet(
     context: dg.AssetExecutionContext,
     sqlite_client_de,
@@ -115,7 +115,7 @@ def backfill_de_sold_data_parquet(
     return dg.MaterializeResult(metadata={"records_backfilled": n})
 
 
-@dg.asset(required_resource_keys={"sqlite_client_uk", "minio_client"})
+@dg.asset
 def backfill_uk_sold_data_parquet(
     context: dg.AssetExecutionContext,
     sqlite_client_uk,
