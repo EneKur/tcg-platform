@@ -3,7 +3,6 @@ import re
 from datetime import datetime
 
 from tcg_platform.resources.minio_client import MinioClientResource
-from tcg_platform.serialization.card_parquet import price_records_to_parquet
 
 
 _ITEM_ID_RE = re.compile(r"/itm/(\d+)")
@@ -108,10 +107,7 @@ def _backfill_sold_data(
 
 
 @dg.asset(required_resource_keys={"sqlite_client_de", "minio_client"})
-def backfill_de_sold_data_parquet(
-    context: dg.AssetExecutionContext,
-    bronze_ebay_de_sqlite_writer: dg.AssetOut,
-) -> dg.MaterializeResult:
+def backfill_de_sold_data_parquet(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     sqlite_client_de = context.resources.sqlite_client_de
     minio_client = context.resources.minio_client
     n = _backfill_sold_data(context, sqlite_client_de, minio_client, "DE")
@@ -119,11 +115,54 @@ def backfill_de_sold_data_parquet(
 
 
 @dg.asset(required_resource_keys={"sqlite_client_uk", "minio_client"})
-def backfill_uk_sold_data_parquet(
-    context: dg.AssetExecutionContext,
-    bronze_ebay_uk_sqlite_writer: dg.AssetOut,
-) -> dg.MaterializeResult:
+def backfill_uk_sold_data_parquet(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     sqlite_client_uk = context.resources.sqlite_client_uk
     minio_client = context.resources.minio_client
     n = _backfill_sold_data(context, sqlite_client_uk, minio_client, "UK")
     return dg.MaterializeResult(metadata={"records_backfilled": n})
+
+
+backfill_de_job = dg.define_asset_job(
+    name="backfill_de_sold_data_job",
+    selection=["backfill_de_sold_data_parquet"],
+    description="Backfill DE sold data from SQLite to MinIO parquet",
+)
+
+
+backfill_uk_job = dg.define_asset_job(
+    name="backfill_uk_sold_data_job",
+    selection=["backfill_uk_sold_data_parquet"],
+    description="Backfill UK sold data from SQLite to MinIO parquet",
+)
+
+
+@dg.sensor(job=backfill_de_job, minimum_interval_seconds=60)
+def backfill_de_sensor(context: dg.SensorEvaluationContext):
+    from dagster import DagsterRunStatus
+    de_runs = context.instance.get_run_ids(
+        job_name="ebay_de_pipeline",
+        limit=1,
+        cursor=context.cursor,
+    )
+    if not de_runs:
+        return None
+    run = context.instance.get_run_by_id(de_runs[0])
+    if run and run.status == DagsterRunStatus.SUCCESS:
+        return dg.RunRequest(run_key=f"backfill_de_{run.run_id}")
+    return None
+
+
+@dg.sensor(job=backfill_uk_job, minimum_interval_seconds=60)
+def backfill_uk_sensor(context: dg.SensorEvaluationContext):
+    from dagster import DagsterRunStatus
+    uk_runs = context.instance.get_run_ids(
+        job_name="ebay_uk_pipeline",
+        limit=1,
+        cursor=context.cursor,
+    )
+    if not uk_runs:
+        return None
+    run = context.instance.get_run_by_id(uk_runs[0])
+    if run and run.status == DagsterRunStatus.SUCCESS:
+        return dg.RunRequest(run_key=f"backfill_uk_{run.run_id}")
+    return None
