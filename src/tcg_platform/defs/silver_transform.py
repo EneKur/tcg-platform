@@ -214,15 +214,18 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
 
     _LOG.info(f"[{region}] Valid: {valid_count}, Quarantine: {quarantine_count}")
 
+    sample_rows = []
     if valid_count > 0:
         valid_pa = pa.Table.from_pydict(valid_df.toPandas().to_dict("list"))
         _write_parquet(minio_client, valid_pa, f"data/{region.lower()}")
+        valid_pdf = valid_df.toPandas()
+        sample_rows = valid_pdf.head(5).to_dict(orient="records")
 
     if quarantine_count > 0:
         quarantine_pa = pa.Table.from_pydict(quarantine_df.toPandas().to_dict("list"))
         _write_parquet(minio_client, quarantine_pa, f"quarantine/{region.lower()}")
 
-    return {"valid": valid_count, "quarantine": quarantine_count}
+    return {"valid": valid_count, "quarantine": quarantine_count, "sample": sample_rows}
 
 
 @dg.asset(required_resource_keys={"minio_client"})
@@ -248,8 +251,18 @@ def silver_de_transform(
     finally:
         server.stop()
 
+    sample_meta = {}
+    if result.get("sample"):
+        for i, row in enumerate(result["sample"][:3]):
+            for col, val in row.items():
+                sample_meta[f"sample_{i+1}.{col}"] = str(val) if val else ""
+
     return dg.MaterializeResult(
-        metadata={"valid_records": result["valid"], "quarantined_records": result["quarantine"]}
+        metadata={
+            "valid_records": result["valid"],
+            "quarantined_records": result["quarantine"],
+            **sample_meta,
+        }
     )
 
 
@@ -276,6 +289,16 @@ def silver_uk_transform(
     finally:
         server.stop()
 
+    sample_meta = {}
+    if result.get("sample"):
+        for i, row in enumerate(result["sample"][:3]):
+            for col, val in row.items():
+                sample_meta[f"sample_{i+1}.{col}"] = str(val) if val else ""
+
     return dg.MaterializeResult(
-        metadata={"valid_records": result["valid"], "quarantined_records": result["quarantine"]}
+        metadata={
+            "valid_records": result["valid"],
+            "quarantined_records": result["quarantine"],
+            **sample_meta,
+        }
     )
