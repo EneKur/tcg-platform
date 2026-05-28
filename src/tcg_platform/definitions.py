@@ -41,6 +41,24 @@ ebay_eu_job = define_asset_job(
     description="Scrape DE+UK eBay sold listings, persist to SQLite",
 )
 
+silver_de_job = define_asset_job(
+    name="silver_de_pipeline",
+    selection=["silver_de_transform"],
+    description="Transform DE bronze parquets to silver layer",
+)
+
+silver_uk_job = define_asset_job(
+    name="silver_uk_pipeline",
+    selection=["silver_uk_transform"],
+    description="Transform UK bronze parquets to silver layer",
+)
+
+silver_eu_job = define_asset_job(
+    name="silver_eu_pipeline",
+    selection=["silver_de_transform", "silver_uk_transform"],
+    description="Transform DE+UK bronze parquets to silver layer",
+)
+
 
 @definitions
 def defs():
@@ -48,7 +66,16 @@ def defs():
     return Definitions(
         assets=base.assets,
         asset_checks=base.asset_checks,
-        jobs=[ebay_de_job, ebay_uk_job, ebay_eu_job, backfill_de_job, backfill_uk_job],
+        jobs=[
+            ebay_de_job,
+            ebay_uk_job,
+            ebay_eu_job,
+            backfill_de_job,
+            backfill_uk_job,
+            silver_de_job,
+            silver_uk_job,
+            silver_eu_job,
+        ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
             "currency_rates_db": currency_rates_db,
