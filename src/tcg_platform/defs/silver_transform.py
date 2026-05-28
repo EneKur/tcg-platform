@@ -81,7 +81,7 @@ def _build_card_id_set(minio_client, bucket: str) -> set[str]:
 
     Handles both MinioClientResource (returns strings) and raw Minio client (returns Object).
     """
-    raw_list = minio_client.list_objects(bucket, prefix="cards/", recursive=True)
+    raw_list = minio_client.list_objects(bucket, prefix="cards/")
     cards = list(raw_list)
     card_ids: set[str] = set()
     for obj in cards:
