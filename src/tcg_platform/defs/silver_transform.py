@@ -3,6 +3,7 @@ import re
 import logging
 
 import dagster as dg
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -30,7 +31,7 @@ _BRONZE_SCHEMA = StructType([
     StructField("title", StringType(), True),
 ])
 
-_VALID_SET_RE = re.compile(r"(OP\d+|EB\d+|ST\d+|PRB\d+)", re.IGNORECASE)
+_VALID_SET_RE = re.compile(r"(OP\d+|EB\d+|ST\d+|PRB\d+|P\d+)", re.IGNORECASE)
 
 
 def _normalize_extracted_id(extracted: str) -> str | None:
@@ -43,35 +44,45 @@ def _normalize_extracted_id(extracted: str) -> str | None:
     ST10 -> ST10 (pure set code, no number)
     OP01 -> OP01
     EB01-001 -> EB01-001 (already normalized)
+    P014 -> P-014
+    P-014 -> P-014 (already normalized)
     """
     if not extracted:
         return None
-    if len(extracted) < 4:
-        return extracted.upper()
-    if extracted[:3].upper() == "PRB":
-        set_code = extracted[:3].upper()
-        number = extracted[3:]
+    upper = extracted.upper()
+    if upper.startswith("P") and len(upper) >= 2:
+        set_code = "P"
+        number = upper[1:]
+        if number.isdigit() and len(number) == 3:
+            return f"P-{number}"
+        return upper
+    if upper[:3] == "PRB":
+        set_code = "PRB"
+        number = upper[3:]
     else:
-        set_code = extracted[:2].upper()
-        number = extracted[2:]
+        set_code = upper[:2]
+        number = upper[2:]
     if not number.isdigit():
-        return extracted.upper()
+        return upper
     if len(number) == 3:
         return f"{set_code}-{number}"
     if len(number) == 4:
         return f"{set_code[:2]}-{number}"
     if len(number) == 5:
         return f"{set_code[:2]}{number[:2]}-{number[2:]}"
-    return extracted.upper()
+    return upper
 
 
 def _is_complete_card_id(extracted: str) -> bool:
     """Check if extracted card_id has a number component (not just a set code)."""
     if not extracted:
         return False
-    if extracted[:3].upper() == "PRB":
-        return len(extracted) > 3 and extracted[3:].isdigit()
-    return len(extracted) > 2 and extracted[2:].isdigit()
+    upper = extracted.upper()
+    if upper[:3] == "PRB":
+        return len(upper) > 3 and upper[3:].isdigit()
+    if upper.startswith("P"):
+        return len(upper) > 1 and upper[1:].isdigit()
+    return len(upper) > 2 and upper[2:].isdigit()
 
 
 def _build_card_id_set(minio_client, bucket: str) -> set[str]:
@@ -217,13 +228,25 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
 
     sample_rows = []
     if valid_count > 0:
-        valid_pa = pa.Table.from_pydict(valid_df.toPandas().to_dict("list"))
-        _write_parquet(minio_client, valid_pa, f"data/{region.lower()}")
         valid_pdf = valid_df.toPandas()
+        _LOG.info(f"Valid PDF dtypes: {dict(valid_pdf.dtypes)}")
+        for col in valid_pdf.columns:
+            if valid_pdf[col].dtype == object:
+                valid_pdf[col] = valid_pdf[col].fillna("")
+            elif valid_pdf[col].dtype == "float64" or valid_pdf[col].dtype.name.startswith("float"):
+                valid_pdf[col] = valid_pdf[col].fillna(0.0)
+        valid_pa = pa.Table.from_pandas(valid_pdf, preserve_index=False)
+        _write_parquet(minio_client, valid_pa, f"data/{region.lower()}")
         sample_rows = valid_pdf.head(5).to_dict(orient="records")
 
     if quarantine_count > 0:
-        quarantine_pa = pa.Table.from_pydict(quarantine_df.toPandas().to_dict("list"))
+        quarantine_pdf = quarantine_df.toPandas()
+        for col in quarantine_pdf.columns:
+            if quarantine_pdf[col].dtype == object:
+                quarantine_pdf[col] = quarantine_pdf[col].fillna("")
+            elif quarantine_pdf[col].dtype == "float64" or quarantine_pdf[col].dtype.name.startswith("float"):
+                quarantine_pdf[col] = quarantine_pdf[col].fillna(0.0)
+        quarantine_pa = pa.Table.from_pandas(quarantine_pdf, preserve_index=False)
         _write_parquet(minio_client, quarantine_pa, f"quarantine/{region.lower()}")
 
     return {"valid": valid_count, "quarantine": quarantine_count, "sample": sample_rows}
