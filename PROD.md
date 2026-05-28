@@ -9,8 +9,9 @@ Three data sources scraped via Steel.cloud anti-ban browser API.
 
 ```
 [data sources]     →  [bronze layer]       →  [silver layer]       →  [gold layer]
-Steel cloud APIs       Parquet (MinIO)          LakeSail (local Spark)    (future)
-                        SQLite
+Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (future)
+                        SQLite                   Spark Connect
+                        eBay sold listings       sc://localhost:{port}
 ```
 
 **Bronze layer:** Raw scraped data — unchanged from source, stored as parquet files in MinIO + tabular entries in SQLite. Idempotent (re-running produces same output, no duplicates).
@@ -75,39 +76,42 @@ Steel cloud APIs       Parquet (MinIO)          LakeSail (local Spark)    (futur
 - [x] ~~**M2-T1**~~ — Scraping pipeline: PriceCharting (card catalog + prices → fact_events, event_type='price_update', scraped_from='pricecharting', source='US'/'Germany')
 - [x] ~~**M2-T2**~~ — Scraping pipeline: Limitless TCG (card catalog → cardlist_dimension + fact_events)
 - [x] ~~**M2-T3**~~ — Image download asset (Limitless TCG images → MinIO, path: `cards/{set_code}/{card_id}.webp`)
-- [ ] **M2-T4** — Create `log/M2-T1.md` through `log/M2-T3.md` with progress docs
+- [x] ~~**M2-T4**~~ — Create `log/M2-T1.md` through `log/M2-T3.md` with progress docs
 
 ### Milestone 3: MinIO Integration (M3)
 - [x] ~~**M3-T1**~~ — MinIO resource (connection, bucket creation)
-- [ ] **M3-T2** — Bronze parquet writer asset (cardlist + fact_events → MinIO)
+- [x] ~~**M3-T2**~~ — Bronze parquet writer asset — **DONE** (inline per-item parquet in eBay scrape loop: `sold_data/DE|UK/{item_id}.parquet`). Limitless TCG parquet (bronze_cardlist_parquet, bronze_fact_events_parquet) deferred to **M7 silver layer** — data first needs cleaning/structuring before partitioning.
 - [x] ~~**M3-T3**~~ — Create `log/M3-T1.md` through `log/M3-T2.md`
 
 ### Milestone 4: SQLite Integration (M4)
-- [ ] **M4-T1** — SQLite resource (connection management)
-- [ ] **M4-T2** — Bronze SQLite writer asset (cardlist + fact_events → SQLite)
-- [ ] **M4-T3** — Idempotency enforcement (upsert logic, source_url + scraped_at primary key)
-- [ ] **M4-T4** — Create `log/M4-T1.md` through `log/M4-T3.md`
+> **COMPLETE / OBSOLETE:** eBay item IDs are unique per sold listing — a sold item event is final on eBay side and cannot be re-sold. The current `(card_id, source_url)` primary key in SQLite is sufficient for idempotency. No further work needed.
+
+- [x] ~~**M4-T1**~~ — SQLite resource (connection management) — `SqliteClientResource` in place
+- [x] ~~**M4-T2**~~ — Bronze SQLite writer asset — `bronze_ebay_de_sqlite_writer` + `bronze_ebay_uk_sqlite_writer` in place
+- [x] ~~**M4-T3**~~ — Idempotency — unnecessary; eBay item IDs are unique per sold event
+- [x] ~~**M4-T4**~~ — Create log docs — not needed
 
 ### Milestone 5: Dagster Definitions (M5)
-> Partial completion — resources wired, one asset scaffolded, but no persistence (MinIO/SQLite) or schedules yet
+> **COMPLETE (scheduling DEFERRED):** Resources and assets wired. Scheduling (daily/hourly pipelines) deferred — not needed until project validated and frequent sniffing required for timely arbitrage reactions.
 
-- [ ] **M5-T1** — Wire all resources and assets into `defs/` folder
-- [ ] **M5-T2** — Schedule: daily full refresh + hourly incremental (new cards only)
-- [ ] **M5-T3** — Create `log/M5-T1.md` through `log/M5-T2.md`
+- [x] ~~**M5-T1**~~ — Wire all resources and assets into `defs/` folder
+- [x] ~~**M5-T2**~~ — **DEFERRED** — Schedule: daily full refresh + hourly incremental (new cards only)
+- [x] ~~**M5-T3**~~ — **DEFERRED** — Create `log/M5-T1.md` through `log/M5-T2.md`
 
 ### Milestone 6: eBay Scraping via Zyte API (M6)
-> **UNBLOCKED:** Zyte API confirmed working — eBay DE sold listings return 200 with full HTML, 62 listings parsed successfully. Zyte free tier sufficient for development.
+> **COMPLETE:** Zyte API working for eBay DE + UK sold listings. Inline per-item parquet write per `2026-05-27-sold-data-parquet-design.md`. Backfill sensor + job also in place.
 
-- [ ] **M6-T1** — Create `ZyteSessionResource` for eBay (uses Zyte API instead of Steel)
-- [ ] **M6-T2** — Scraping pipeline: eBay DE (PSA grades 1-10 → fact_events, event_type='sale', scraped_from='ebay', source='ebay')
-- [ ] **M6-T3** — Create `log/M6-T1.md` through `log/M6-T2.md`
+- [x] ~~**M6-T1**~~ — Create `ZyteSessionResource` for eBay (uses Zyte API instead of Steel)
+- [x] ~~**M6-T2**~~ — Scraping pipeline: eBay DE + UK (PSA grades 1-10 → fact_events → SQLite + MinIO parquet inline)
+- [x] ~~**M6-T3**~~ — Create `log/M6-T1.md` through `log/M6-T2.md`
 
 ### Milestone 7: Silver Layer — Lakehouse Processing (M7)
-> **Future milestone:** When bronze data is ready for transformation (bronze → silver → gold), use [LakeSail](https://github.com/lakesail/lakesail) as a local Spark-alternative for efficient in-process data processing.
+> **M7-T1 COMPLETE:** LakeSail (pysail) integrated as local Spark-alternative via Spark Connect. PyArrow `from_pandas()` for DataFrame→Parquet conversion. P card normalization added (`P\d+` pattern, `P-XXX` format). PySpark 4.1+ via Spark Connect (`sc://localhost:{port}`). PyArrow fs for MinIO read/write (no Hadoop jars).
 
-- [ ] **M7-T1** — Evaluate and integrate LakeSail as Spark replacement for local lakehouse processing
-- [ ] **M7-T2** — Define silver layer transformations (deduplication, enrichment, type casting)
-- [ ] **M7-T3** — Create `log/M7-T1.md` through `log/M7-T2.md`
+- [x] **M7-T1** — Evaluate and integrate LakeSail as Spark replacement for local lakehouse processing
+- [x] **M7-T2** — Wire silver DE/UK/EU pipelines (valid card_ids → `tcg-silver/data/{region}/`, invalid → `tcg-silver/quarantine/{region}/`)
+- [x] **M7-T3** — Define silver layer transformations (card_id normalization, `title` field capture, quarantine logic)
+- [ ] **M7-T4** — Create `log/M7-T1.md` through `log/M7-T3.md` (pending)
 
 ---
 
@@ -120,6 +124,8 @@ auth/
   profile_limitlesstcg.json
 ```
 
+> **Note:** MinIO and SQLite integration (M3/M4) must be built before M2 scraping pipelines can write data. Order: M2 → M3 → M4 for full bronze layer completion.
+
 ## Dependencies
 
 ```
@@ -128,17 +134,20 @@ dagster-dg-cli
 dagster-webserver
 steel-sdk>=0.17.0       # steel.dev scrape() API for static HTML (PriceCharting)
 zyte-api>=0.5.0         # Zyte API for browser-rendered scraping (eBay DE)
-playwright>=1.40.0     # Playwright for JS-heavy sites (Limitless TCG)
-minio>=7.0.0           # S3-compatible object store client
-beautifulsoup4         # HTML parsing
-lxml                   # HTML parser (faster than built-in)
-pydantic               # schema validation
-python-dotenv          # .env file loading for API keys
+playwright>=1.40.0      # Playwright for JS-heavy sites (Limitless TCG)
+minio>=7.0.0            # S3-compatible object store client
+beautifulsoup4          # HTML parsing
+lxml                    # HTML parser (faster than built-in)
+pydantic                # schema validation
+python-dotenv           # .env file loading for API keys
+pysail>=0.1.0           # LakeSail — local Spark-alternative via Spark Connect
+pyspark>=4.1.0          # PySpark with Spark Connect support
+pyarrow                 # Parquet read/write via PyArrow (not Hadoop)
+pandas                  # DataFrame operations
+zstandard               # Zstandard compression for SQLite
+duckdb                  # SQL queries on silver layer parquet files
+grpcio-status           # gRPC support for Spark Connect
 ```
-
-> **Future:** LakeSail (local Spark-alternative) for silver layer processing — TBD when M7 is reached.
-
-> **Note:** MinIO and SQLite integration (M3/M4) must be built before M2 scraping pipelines can write data. Order: M2 → M3 → M4 for full bronze layer completion.
 
 ## Environment Variables
 
@@ -151,6 +160,13 @@ MINIO_SECRET_KEY=<minioadmin>
 MINIO_BUCKET=tcg-bronze
 SQLITE_PATH=./data/tcg.db
 ```
+
+## MinIO Buckets
+
+| Bucket | Contents |
+|--------|----------|
+| `tcg-bronze` | Raw scraped data: `sold_data/{DE\|UK}/` parquets, `cards/{set}/` images |
+| `tcg-silver` | Validated records: `data/{de\|uk}/`, quarantined: `quarantine/{de\|uk}/` |
 
 ## Conventions
 
