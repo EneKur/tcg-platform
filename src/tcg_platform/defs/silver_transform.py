@@ -27,6 +27,7 @@ _BRONZE_SCHEMA = StructType([
     StructField("language", StringType(), True),
     StructField("scraped_at", StringType(), True),
     StructField("image_url", StringType(), True),
+    StructField("title", StringType(), True),
 ])
 
 _VALID_SET_RE = re.compile(r"(OP\d+|EB\d+|ST\d+|PRB\d+)", re.IGNORECASE)
@@ -188,7 +189,7 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
             table = pq.read_table(io.BytesIO(data))
             d = {k: list(v) for k, v in table.to_pydict().items()}
             for i in range(table.num_rows):
-                row = tuple(d[col][i] if d[col] else None for col in _BRONZE_SCHEMA.names)
+                row = tuple(d.get(col, [None])[i] if d.get(col) else None for col in _BRONZE_SCHEMA.names)
                 all_rows.append(row)
         except Exception as e:
             _LOG.warning(f"Failed to read {obj_name}: {e}")

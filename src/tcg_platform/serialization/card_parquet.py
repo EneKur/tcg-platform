@@ -45,6 +45,7 @@ def price_records_to_parquet(prices: list, partition_date: str) -> tuple[bytes, 
             "source": price.source,
             "source_url": price.source_url,
             "scraped_at": now.isoformat(),
+            "title": getattr(price, "title", None) or "",
         }
         for price in prices
     ]
