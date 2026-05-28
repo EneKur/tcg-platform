@@ -228,13 +228,13 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
 @dg.asset(required_resource_keys={"minio_client"})
 def silver_de_transform(
     context: dg.AssetExecutionContext,
-    minio_client,
 ) -> dg.MaterializeResult:
     """Transform DE bronze parquets into silver layer.
 
     Valid card_ids (found in tcg-bronze/cards/) -> tcg-silver/data/de/
     Invalid card_ids -> tcg-silver/quarantine/de/
     """
+    minio_client = context.resources.minio_client
     server = SparkConnectServer("127.0.0.1", 0)
     server.start(background=True)
     addr, port = server.listening_address
@@ -256,13 +256,13 @@ def silver_de_transform(
 @dg.asset(required_resource_keys={"minio_client"})
 def silver_uk_transform(
     context: dg.AssetExecutionContext,
-    minio_client,
 ) -> dg.MaterializeResult:
     """Transform UK bronze parquets into silver layer.
 
     Valid card_ids (found in tcg-bronze/cards/) -> tcg-silver/data/uk/
     Invalid card_ids -> tcg-silver/quarantine/uk/
     """
+    minio_client = context.resources.minio_client
     server = SparkConnectServer("127.0.0.1", 0)
     server.start(background=True)
     addr, port = server.listening_address
