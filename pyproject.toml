@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=2.3.3",
     "grpcio-status>=1.80.0",
     "zstandard>=0.25.0",
+    "duckdb>=1.5.3",
 ]
 
 [dependency-groups]
