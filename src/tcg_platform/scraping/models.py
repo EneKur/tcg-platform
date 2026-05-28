@@ -32,6 +32,7 @@ class PriceRecord(BaseModel):
     scraped_at: datetime
     image_url: Optional[str] = None
     local_image_path: Optional[str] = None
+    title: Optional[str] = None
 
 
 class ImageRecord(BaseModel):
