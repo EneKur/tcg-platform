@@ -3,26 +3,17 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from dagster import ConfigurableResource
-from dagster._config.pythonic_config.resource import InitResourceContext
 
-
-class CurrencyRatesDB(ConfigurableResource):
+class CurrencyRatesDB:
     db_path: str
 
     _conn: Optional[sqlite3.Connection] = None
 
-    def setup_for_execution(self, context: InitResourceContext) -> None:
-        if self.db_path:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
-        self._conn.row_factory = sqlite3.Row
-        self._initialize_schema()
-
-    def setup(self) -> None:
-        if self.db_path:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
+        if db_path:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self._conn = sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
         self._conn.row_factory = sqlite3.Row
         self._initialize_schema()
 

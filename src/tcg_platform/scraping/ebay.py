@@ -104,7 +104,7 @@ def _normalize_card_id(title: str) -> str:
     title = re.sub(r"\s*\(.*?\)", "", title)
     title = re.sub(r"\s*\[.*?\]", "", title)
     title = re.sub(r"[^a-zA-Z0-9\s]", "", title)
-    return title.strip().replace(" ", "_")[:50]
+    return title.strip().replace(" ", "_")[:100]
 
 
 def _split_base_version(card_id: str) -> tuple[str, str]:
@@ -189,6 +189,7 @@ def parse_ebay_item_page(
                 source_url=item_url,
                 language=language,
                 scraped_at=scraped_at,
+                title=title,
             )
         ]
     return []
