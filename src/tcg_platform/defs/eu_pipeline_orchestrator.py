@@ -44,3 +44,4 @@ def silver_eu_orchestrator(context: dg.AssetExecutionContext):
     result = silver_eu_job.execute_in_process()
     context.log.info(f"silver_eu_orchestrator complete, run_id={result.run_id}")
     return dg.MaterializeResult(metadata={"run_id": result.run_id})
+
