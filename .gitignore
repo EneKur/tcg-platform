@@ -61,6 +61,11 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+#Data - actual scraped data stays local
+data/tcg_de.db
+data/tcg_uk.db
+data/currency_rates.db
+
 # Flask stuff:
 instance/
 .webassets-cache
