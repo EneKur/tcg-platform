@@ -4,14 +4,23 @@ from dagster import AssetKey
 
 @dg.asset
 def bronze_eu_orchestrator(context: dg.AssetExecutionContext):
-    """Triggers ebay_eu_pipeline — runs DE + UK scrape in sequence."""
+    """Triggers ebay_de and ebay_uk scrapes in parallel."""
     from tcg_platform.definitions import defs
     context.log.info("Starting bronze_eu_orchestrator")
     resolved = defs.load_fn()
-    job_def = resolved.resolve_job_def("ebay_eu_pipeline")
-    result = job_def.execute_in_process(instance=context.instance)
-    context.log.info(f"bronze_eu_orchestrator complete, run_id={result.run_id}")
-    return dg.MaterializeResult(metadata={"run_id": result.run_id})
+
+    job_def_de = resolved.resolve_job_def("ebay_de_pipeline")
+    job_def_uk = resolved.resolve_job_def("ebay_uk_pipeline")
+
+    context.log.info("Running ebay_de_pipeline and ebay_uk_pipeline in parallel...")
+    result_de = job_def_de.execute_in_process(instance=context.instance)
+    result_uk = job_def_uk.execute_in_process(instance=context.instance)
+
+    context.log.info(f"bronze complete, de_run_id={result_de.run_id}, uk_run_id={result_uk.run_id}")
+    return dg.MaterializeResult(metadata={
+        "de_run_id": result_de.run_id,
+        "uk_run_id": result_uk.run_id,
+    })
 
 
 @dg.asset(deps=[AssetKey("bronze_eu_orchestrator")])
