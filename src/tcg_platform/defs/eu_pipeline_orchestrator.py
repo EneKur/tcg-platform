@@ -11,7 +11,6 @@ def bronze_eu_orchestrator(context: dg.AssetExecutionContext):
     result = context.instance.create_run(
         job_name=ebay_eu_job.name,
         run_config=run_config,
-        resolved_top_level_resources=True,
     )
     result = context.instance.submit_run(result.run_id)
     context.log.info(f"bronze_eu_orchestrator complete, run_id={result.run_id}")
@@ -29,7 +28,6 @@ def backfill_de_asset(context: dg.AssetExecutionContext):
     run = context.instance.create_run(
         job_name=job.name,
         run_config={},
-        resolved_top_level_resources=True,
     )
     result = context.instance.submit_run(run.run_id)
     context.log.info(f"backfill_de_asset complete, run_id={result.run_id}")
@@ -47,7 +45,6 @@ def backfill_uk_asset(context: dg.AssetExecutionContext):
     run = context.instance.create_run(
         job_name=job.name,
         run_config={},
-        resolved_top_level_resources=True,
     )
     result = context.instance.submit_run(run.run_id)
     context.log.info(f"backfill_uk_asset complete, run_id={result.run_id}")
