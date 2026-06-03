@@ -262,17 +262,31 @@ def silver_de_transform(
     Invalid card_ids -> tcg-silver/quarantine/de/
     """
     minio_client = context.resources.minio_client
+
+    try:
+        active = SparkSession.getActiveSession()
+        if active:
+            active.stop()
+    except Exception:
+        pass
+
     server = SparkConnectServer("127.0.0.1", 0)
     server.start(background=True)
     addr, port = server.listening_address
     context.log.info(f"SparkConnectServer started at sc://localhost:{port}")
 
+    spark = None
     try:
-        spark = SparkSession.builder.remote(f"sc://localhost:{port}").getOrCreate()
+        spark = SparkSession.builder.remote(f"sc://localhost:{port}").appName("silver_de_transform").getOrCreate()
         context.log.info("Connected to Spark")
         result = _run_silver_transform(spark, minio_client, "DE")
         context.log.info(f"DE transform done: {result}")
     finally:
+        if spark:
+            try:
+                spark.stop()
+            except Exception:
+                pass
         server.stop()
 
     sample_meta = {}
@@ -300,17 +314,31 @@ def silver_uk_transform(
     Invalid card_ids -> tcg-silver/quarantine/uk/
     """
     minio_client = context.resources.minio_client
+
+    try:
+        active = SparkSession.getActiveSession()
+        if active:
+            active.stop()
+    except Exception:
+        pass
+
     server = SparkConnectServer("127.0.0.1", 0)
     server.start(background=True)
     addr, port = server.listening_address
     context.log.info(f"SparkConnectServer started at sc://localhost:{port}")
 
+    spark = None
     try:
-        spark = SparkSession.builder.remote(f"sc://localhost:{port}").getOrCreate()
+        spark = SparkSession.builder.remote(f"sc://localhost:{port}").appName("silver_uk_transform").getOrCreate()
         context.log.info("Connected to Spark")
         result = _run_silver_transform(spark, minio_client, "UK")
         context.log.info(f"UK transform done: {result}")
     finally:
+        if spark:
+            try:
+                spark.stop()
+            except Exception:
+                pass
         server.stop()
 
     sample_meta = {}

@@ -20,6 +20,12 @@ from tcg_platform.resources.sqlite_client import (
 from tcg_platform.defs.zyte_resources import (
     zyte_session_resource,
 )
+from tcg_platform.defs.eu_pipeline_orchestrator import (
+    bronze_eu_orchestrator,
+    backfill_de_asset,
+    backfill_uk_asset,
+    silver_eu_orchestrator,
+)
 
 
 ebay_de_job = define_asset_job(
@@ -59,6 +65,12 @@ silver_eu_job = define_asset_job(
     description="Transform DE+UK bronze parquets to silver layer",
 )
 
+complete_eu_pipeline = define_asset_job(
+    name="complete_eu_pipeline",
+    selection=["bronze_eu_orchestrator", "backfill_de_asset", "backfill_uk_asset", "silver_eu_orchestrator"],
+    description="Full EU pipeline: bronze → backfill (DE+UK parallel) → silver",
+)
+
 
 @definitions
 def defs():
@@ -75,6 +87,7 @@ def defs():
             silver_de_job,
             silver_uk_job,
             silver_eu_job,
+            complete_eu_pipeline,
         ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
