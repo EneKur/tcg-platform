@@ -11,8 +11,12 @@ from pysail.spark import SparkConnectServer
 from pyspark.sql import SparkSession
 from pyspark.sql.types import BooleanType, StructType, StructField, StringType, DoubleType
 
+from tcg_platform.scraping.ebay_utils import extract_item_id
+
 
 _LOG = logging.getLogger(__name__)
+
+SILVER_BUCKET = "tcg-silver"
 
 _BRONZE_SCHEMA = StructType([
     StructField("event_id", StringType(), True),
@@ -151,7 +155,7 @@ def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
     ]
     for path in legacy_paths:
         try:
-            existing = minio_client.list_objects("tcg-silver", prefix=path)
+            existing = minio_client.list_objects(SILVER_BUCKET, prefix=path)
         except Exception as e:
             _LOG.warning(f"Cleanup list failed for {path}: {e}")
             continue
@@ -159,7 +163,7 @@ def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
             continue
         to_delete = [DeleteObject(name) for name in existing]
         try:
-            minio_client.remove_objects("tcg-silver", to_delete)
+            minio_client.remove_objects(SILVER_BUCKET, to_delete)
             _LOG.info(f"Deleted legacy {len(to_delete)} file(s) at {path}")
         except Exception as e:
             _LOG.warning(f"Cleanup remove failed for {path}: {e}")
@@ -192,34 +196,45 @@ def _resolve_collision_path(
     """
     new_tuple = (row.get("sold_date") or "", event_id, row.get("title") or "")
 
-    existing = minio_client.list_objects("tcg-silver", prefix=prefix)
-    existing_set = set(existing)
-
-    if base_path not in existing_set:
+    existing = minio_client.list_objects(SILVER_BUCKET, prefix=prefix)
+    # Files in the prefix belonging to this event_id (base or any _x suffix).
+    # We need to check ALL of them, not just the base — otherwise a missing
+    # base + present _1 would be treated as "no collision" and the base
+    # path would silently overwrite something unrelated to the same item.
+    same_id = [
+        name for name in existing
+        if name == base_path or name.startswith(f"{prefix}{event_id}_")
+    ]
+    if not same_id:
         return base_path
 
-    try:
-        data = minio_client.get_object("tcg-silver", base_path)
-        existing_table = pq.read_table(io.BytesIO(data))
-        existing_tuple = _extract_identity_tuple(existing_table)
+    def _read_tuple(path: str) -> tuple | None:
+        """Read existing file's identity tuple, or None on read failure."""
+        try:
+            data = minio_client.get_object(SILVER_BUCKET, path)
+            existing_table = pq.read_table(io.BytesIO(data))
+            return _extract_identity_tuple(existing_table)
+        except Exception as e:
+            _LOG.warning(f"Failed to read existing {path} for collision check: {e}")
+            return None
+
+    # Check the base path first.
+    if base_path in same_id:
+        existing_tuple = _read_tuple(base_path)
         if existing_tuple == new_tuple:
             return base_path
-    except Exception as e:
-        _LOG.warning(f"Failed to read existing {base_path} for collision check: {e}")
+        # Read failure on base → don't overwrite; fall through to suffix search.
 
+    # Then check each _x suffix in order. A read failure on a suffix means
+    # the file is corrupt; overwriting it with the new (valid) data is
+    # safer than skipping (the corrupt data is meaningless anyway).
     suffix = 1
     while True:
         candidate = f"{prefix}{event_id}_{suffix}.parquet"
-        if candidate not in existing_set:
+        if candidate not in same_id:
             return candidate
-        try:
-            data = minio_client.get_object("tcg-silver", candidate)
-            existing_table = pq.read_table(io.BytesIO(data))
-            existing_tuple = _extract_identity_tuple(existing_table)
-            if existing_tuple == new_tuple:
-                return candidate
-        except Exception as e:
-            _LOG.warning(f"Failed to read existing {candidate} for collision check: {e}")
+        existing_tuple = _read_tuple(candidate)
+        if existing_tuple is None or existing_tuple == new_tuple:
             return candidate
         suffix += 1
 
@@ -240,8 +255,6 @@ def _write_silver_parquet(
 
     Returns the written object_name, or None if row was skipped.
     """
-    from tcg_platform.scraping.ebay_utils import extract_item_id
-
     event_id = extract_item_id(row.get("source_url") or "")
     if event_id.startswith("http"):
         _LOG.warning(f"Skipping row: no item_id in source_url {row.get('source_url')!r}")
@@ -266,7 +279,7 @@ def _write_silver_parquet(
     data = buf.getvalue()
 
     minio_client.put_object(
-        bucket_name="tcg-silver",
+        bucket_name=SILVER_BUCKET,
         object_name=target_path,
         data=data,
         length=len(data),

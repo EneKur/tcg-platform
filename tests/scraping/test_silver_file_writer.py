@@ -223,3 +223,26 @@ def test_cleanup_deletes_legacy_aggregated_files():
             removed_paths.append(obj.name)
     assert "data/de/data.parquet" in removed_paths
     assert "quarantine/de/data.parquet" in removed_paths
+
+
+def test_base_read_failure_falls_through_to_suffix():
+    # Base file exists but is corrupt (not a valid parquet). Collision check
+    # should log a warning and fall through to _1.parquet (don't overwrite
+    # the corrupt base).
+    file_map = {"data/de/127860244828.parquet": b"not a parquet file"}
+    minio = _make_minio_with_existing_files(file_map)
+    _write_silver_parquet(minio, "DE", "data", _row_dict())
+    assert "data/de/127860244828_1.parquet" in file_map
+    # Base should NOT be overwritten (corrupt file preserved)
+    assert file_map["data/de/127860244828.parquet"] == b"not a parquet file"
+
+
+def test_suffixed_read_failure_overwrites_corrupt_candidate():
+    # _1.parquet exists but is corrupt. Writer should overwrite it (better
+    # than skipping; at least the result is a valid file).
+    file_map = {"data/de/127860244828_1.parquet": b"not a parquet file"}
+    minio = _make_minio_with_existing_files(file_map)
+    _write_silver_parquet(minio, "DE", "data", _row_dict())
+    # _1 should now be overwritten with valid parquet
+    table = pq.read_table(io.BytesIO(file_map["data/de/127860244828_1.parquet"]))
+    assert table.column("event_id").to_pylist() == ["127860244828"]
