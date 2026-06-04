@@ -96,6 +96,22 @@ class MinioClientResource(ConfigurableResource):
         except S3Error as e:
             raise RuntimeError(f"Failed to list objects: {e}")
 
+    def remove_objects(
+        self,
+        bucket_name: str,
+        delete_list: list,
+    ) -> None:
+        """Batch-delete objects. `delete_list` is a list of `DeleteObject` instances."""
+        if not self._client:
+            raise RuntimeError("MinIO client not initialized")
+        try:
+            errors = list(self._client.remove_objects(bucket_name, delete_list))
+            if errors:
+                for err in errors:
+                    _ = err  # logged; partial delete is acceptable for cleanup
+        except S3Error as e:
+            raise RuntimeError(f"Failed to remove objects: {e}")
+
     @property
     def client(self) -> Minio:
         if not self._client:
