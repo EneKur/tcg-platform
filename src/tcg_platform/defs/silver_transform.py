@@ -367,7 +367,14 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
     # Cleanup legacy aggregated files from before the per-item-id change
     _cleanup_legacy_aggregated_files(minio_client, region)
 
-    # Write valid rows to data/{region}/{event_id}.parquet
+    # NOTE: _write_silver_parquet does one MinIO list_objects per row (O(N)
+    # round-trips per run). Negligible at current scale (tens of rows). If row
+    # counts reach the thousands, batch this by pre-listing each prefix once
+    # and passing the existing-file set into the writer.
+
+    # Write valid rows to data/{region}/{event_id}.parquet.
+    # NaN values are normalized inside _write_silver_parquet; we only fill the
+    # valid frame here so the sample_rows metadata below is NaN-free.
     if valid_count > 0:
         valid_pdf = valid_df.toPandas()
         for col in valid_pdf.columns:
@@ -385,14 +392,10 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
         _LOG.info(f"[{region}] Wrote {written_valid} valid per-item-id files")
         sample_rows = valid_pdf.head(5).to_dict(orient="records")
 
-    # Write quarantined rows to quarantine/{region}/{event_id}.parquet
+    # Write quarantined rows to quarantine/{region}/{event_id}.parquet.
+    # No fillna here — _write_silver_parquet normalizes NaN per row.
     if quarantine_count > 0:
         quarantine_pdf = quarantine_df.toPandas()
-        for col in quarantine_pdf.columns:
-            if quarantine_pdf[col].dtype == object:
-                quarantine_pdf[col] = quarantine_pdf[col].fillna("")
-            elif quarantine_pdf[col].dtype.name.startswith("float"):
-                quarantine_pdf[col] = quarantine_pdf[col].fillna(0.0)
         written_quarantine = 0
         for _, row in quarantine_pdf.iterrows():
             result_path = _write_silver_parquet(
