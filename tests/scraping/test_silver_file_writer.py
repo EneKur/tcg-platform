@@ -20,6 +20,11 @@ def test_cleanup_deletes_legacy_aggregated_files():
 
     # Both DE legacy files should have been removed (one remove_objects call each)
     assert minio_client.remove_objects.call_count == 2
-    removed_paths = [obj.name for _, objs in minio_client.remove_objects.call_args_list for obj in objs[1]]
+    removed_paths = []
+    for call in minio_client.remove_objects.call_args_list:
+        args, _ = call
+        # args = (bucket_name, [DeleteObject, ...])
+        for obj in args[1]:
+            removed_paths.append(obj.name)
     assert "data/de/data.parquet" in removed_paths
     assert "quarantine/de/data.parquet" in removed_paths
