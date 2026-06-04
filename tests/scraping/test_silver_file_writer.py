@@ -1,11 +1,208 @@
+import io
 from unittest.mock import MagicMock
-from tcg_platform.defs.silver_transform import _cleanup_legacy_aggregated_files
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from tcg_platform.defs.silver_transform import (
+    _cleanup_legacy_aggregated_files,
+    _write_silver_parquet,
+)
+
+
+def _make_minio_with_existing_files(file_map: dict) -> MagicMock:
+    """Build a mock MinioClientResource pre-populated with given files.
+
+    file_map: {object_name: parquet_bytes}
+    """
+    minio = MagicMock()
+
+    def list_objects(bucket, prefix=""):
+        return [name for name in file_map if name.startswith(prefix)]
+
+    def get_object(bucket, name):
+        return file_map[name]
+
+    def put_object(bucket_name, object_name, data, length, content_type="application/octet-stream"):
+        if hasattr(data, "read"):
+            file_map[object_name] = data.read()
+        else:
+            file_map[object_name] = data
+
+    minio.list_objects = list_objects
+    minio.get_object = get_object
+    minio.put_object = put_object
+    return minio
+
+
+def _row_dict(**overrides) -> dict:
+    base = {
+        "event_id": "",
+        "card_id": "OP01-001",
+        "card_version": None,
+        "event_type": "sale",
+        "price": 100.0,
+        "currency": "EUR",
+        "sold_date": "2026-06-04",
+        "scraped_from": "ebay",
+        "source": "DE",
+        "source_url": "https://www.ebay.de/itm/127860244828",
+        "language": "EN",
+        "scraped_at": "2026-06-04T09:00:00+00:00",
+        "image_url": "https://i.ebayimg.com/x.jpg",
+        "title": "OP01-001 Luffy",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_writes_per_item_id_file_with_event_id_populated():
+    file_map = {}
+    minio = _make_minio_with_existing_files(file_map)
+
+    _write_silver_parquet(minio, "DE", "data", _row_dict())
+
+    assert "data/de/127860244828.parquet" in file_map
+    table = pq.read_table(io.BytesIO(file_map["data/de/127860244828.parquet"]))
+    assert table.column("event_id").to_pylist() == ["127860244828"]
+
+
+def test_writes_to_quarantine_prefix_for_invalid_card_id():
+    file_map = {}
+    minio = _make_minio_with_existing_files(file_map)
+
+    _write_silver_parquet(minio, "DE", "quarantine", _row_dict(card_id="MALFORMED_TITLE"))
+
+    assert "quarantine/de/127860244828.parquet" in file_map
+
+
+def test_overwrites_in_place_when_tuple_matches():
+    file_map = {}
+    existing_table = pa.Table.from_pydict({
+        "event_id": ["127860244828"],
+        "card_id": ["OP01-001"],
+        "card_version": [None],
+        "event_type": ["sale"],
+        "price": [100.0],
+        "currency": ["EUR"],
+        "sold_date": ["2026-06-04"],
+        "scraped_from": ["ebay"],
+        "source": ["DE"],
+        "source_url": ["https://www.ebay.de/itm/127860244828"],
+        "language": ["EN"],
+        "scraped_at": ["2026-06-04T09:00:00+00:00"],
+        "image_url": ["https://i.ebayimg.com/x.jpg"],
+        "title": ["OP01-001 Luffy"],
+    })
+    buf = io.BytesIO()
+    pq.write_table(existing_table, buf)
+    file_map["data/de/127860244828.parquet"] = buf.getvalue()
+
+    minio = _make_minio_with_existing_files(file_map)
+    _write_silver_parquet(minio, "DE", "data", _row_dict())
+
+    assert "data/de/127860244828_1.parquet" not in file_map
+    assert "data/de/127860244828.parquet" in file_map
+
+
+def test_adds_suffix_when_sold_date_differs():
+    file_map = {}
+    existing_table = pa.Table.from_pydict({
+        "event_id": ["127860244828"],
+        "card_id": ["OP01-001"],
+        "card_version": [None],
+        "event_type": ["sale"],
+        "price": [100.0],
+        "currency": ["EUR"],
+        "sold_date": ["2026-06-01"],
+        "scraped_from": ["ebay"],
+        "source": ["DE"],
+        "source_url": ["https://www.ebay.de/itm/127860244828"],
+        "language": ["EN"],
+        "scraped_at": ["2026-06-04T09:00:00+00:00"],
+        "image_url": ["https://i.ebayimg.com/x.jpg"],
+        "title": ["OP01-001 Luffy"],
+    })
+    buf = io.BytesIO()
+    pq.write_table(existing_table, buf)
+    file_map["data/de/127860244828.parquet"] = buf.getvalue()
+
+    minio = _make_minio_with_existing_files(file_map)
+    _write_silver_parquet(minio, "DE", "data", _row_dict(sold_date="2026-06-04"))
+
+    assert "data/de/127860244828_1.parquet" in file_map
+    assert "data/de/127860244828.parquet" in file_map
+
+
+def test_adds_suffix_when_title_differs():
+    file_map = {}
+    existing_table = pa.Table.from_pydict({
+        "event_id": ["127860244828"],
+        "card_id": ["OP01-001"],
+        "card_version": [None],
+        "event_type": ["sale"],
+        "price": [100.0],
+        "currency": ["EUR"],
+        "sold_date": ["2026-06-04"],
+        "scraped_from": ["ebay"],
+        "source": ["DE"],
+        "source_url": ["https://www.ebay.de/itm/127860244828"],
+        "language": ["EN"],
+        "scraped_at": ["2026-06-04T09:00:00+00:00"],
+        "image_url": ["https://i.ebayimg.com/x.jpg"],
+        "title": ["OP01-001 Luffy (alt)"],
+    })
+    buf = io.BytesIO()
+    pq.write_table(existing_table, buf)
+    file_map["data/de/127860244828.parquet"] = buf.getvalue()
+
+    minio = _make_minio_with_existing_files(file_map)
+    _write_silver_parquet(minio, "DE", "data", _row_dict(title="OP01-001 Luffy"))
+
+    assert "data/de/127860244828_1.parquet" in file_map
+
+
+def test_increments_suffix_until_free():
+    file_map = {}
+    for suffix, date in [("", "2026-06-01"), ("_1", "2026-06-02"), ("_2", "2026-06-03")]:
+        existing_table = pa.Table.from_pydict({
+            "event_id": ["127860244828"],
+            "card_id": ["OP01-001"],
+            "card_version": [None],
+            "event_type": ["sale"],
+            "price": [100.0],
+            "currency": ["EUR"],
+            "sold_date": [date],
+            "scraped_from": ["ebay"],
+            "source": ["DE"],
+            "source_url": ["https://www.ebay.de/itm/127860244828"],
+            "language": ["EN"],
+            "scraped_at": ["2026-06-04T09:00:00+00:00"],
+            "image_url": ["https://i.ebayimg.com/x.jpg"],
+            "title": ["OP01-001 Luffy"],
+        })
+        buf = io.BytesIO()
+        pq.write_table(existing_table, buf)
+        file_map[f"data/de/127860244828{suffix}.parquet"] = buf.getvalue()
+
+    minio = _make_minio_with_existing_files(file_map)
+    _write_silver_parquet(minio, "DE", "data", _row_dict(sold_date="2026-06-04"))
+
+    assert "data/de/127860244828_3.parquet" in file_map
+
+
+def test_skips_row_when_source_url_has_no_item_id():
+    file_map = {}
+    minio = _make_minio_with_existing_files(file_map)
+
+    _write_silver_parquet(minio, "DE", "data", _row_dict(source_url="https://example.com/no-item"))
+
+    assert len(file_map) == 0
 
 
 def test_cleanup_deletes_legacy_aggregated_files():
     minio_client = MagicMock()
 
-    # list_objects returns names matching the requested full-path prefix
     def fake_list(bucket, prefix=""):
         if prefix == "data/de/data.parquet":
             return ["data/de/data.parquet"]
@@ -18,12 +215,10 @@ def test_cleanup_deletes_legacy_aggregated_files():
 
     _cleanup_legacy_aggregated_files(minio_client, "DE")
 
-    # Both DE legacy files should have been removed (one remove_objects call each)
     assert minio_client.remove_objects.call_count == 2
     removed_paths = []
     for call in minio_client.remove_objects.call_args_list:
         args, _ = call
-        # args = (bucket_name, [DeleteObject, ...])
         for obj in args[1]:
             removed_paths.append(obj.name)
     assert "data/de/data.parquet" in removed_paths

@@ -165,24 +165,114 @@ def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
             _LOG.warning(f"Cleanup remove failed for {path}: {e}")
 
 
-def _write_parquet(minio_client, table: pa.Table, dest_prefix: str) -> int:
-    """Write a PyArrow Table as a single parquet file to MinIO tcg-silver bucket."""
-    if table.num_rows == 0:
-        return 0
+def _extract_identity_tuple(table: pa.Table) -> tuple:
+    """Extract the (sold_date, event_id, title) tuple from a single-row table."""
+    return (
+        table.column("sold_date").to_pylist()[0] or "",
+        table.column("event_id").to_pylist()[0] or "",
+        table.column("title").to_pylist()[0] or "",
+    )
+
+
+def _resolve_collision_path(
+    minio_client,
+    prefix: str,
+    base_path: str,
+    event_id: str,
+    row: dict,
+) -> str:
+    """Find the path to write to: base, _x matching, or first free _x.
+
+    Strategy:
+      1. If base_path doesn't exist → return base_path.
+      2. Read base file. If (sold_date, event_id, title) matches → return base_path.
+      3. Try _1, _2, ... in order. For each: if it doesn't exist → return it.
+         If it exists and tuple matches → return it (overwrite matching).
+         If it exists and tuple differs → continue.
+    """
+    new_tuple = (row.get("sold_date") or "", event_id, row.get("title") or "")
+
+    existing = minio_client.list_objects("tcg-silver", prefix=prefix)
+    existing_set = set(existing)
+
+    if base_path not in existing_set:
+        return base_path
+
+    try:
+        data = minio_client.get_object("tcg-silver", base_path)
+        existing_table = pq.read_table(io.BytesIO(data))
+        existing_tuple = _extract_identity_tuple(existing_table)
+        if existing_tuple == new_tuple:
+            return base_path
+    except Exception as e:
+        _LOG.warning(f"Failed to read existing {base_path} for collision check: {e}")
+
+    suffix = 1
+    while True:
+        candidate = f"{prefix}{event_id}_{suffix}.parquet"
+        if candidate not in existing_set:
+            return candidate
+        try:
+            data = minio_client.get_object("tcg-silver", candidate)
+            existing_table = pq.read_table(io.BytesIO(data))
+            existing_tuple = _extract_identity_tuple(existing_table)
+            if existing_tuple == new_tuple:
+                return candidate
+        except Exception as e:
+            _LOG.warning(f"Failed to read existing {candidate} for collision check: {e}")
+            return candidate
+        suffix += 1
+
+
+def _write_silver_parquet(
+    minio_client,
+    region: str,
+    bucket: str,
+    row: dict,
+) -> str | None:
+    """Write a single silver row to a per-item-id parquet file.
+
+    Layout: tcg-silver/{bucket}/{region}/{event_id}.parquet (or _{x}.parquet
+    on collision). The event_id is extracted from source_url via
+    extract_item_id(). Collision check uses the (sold_date, event_id, title)
+    tuple: if all three match an existing file, overwrite in place; if any
+    differ, find the next free _x suffix.
+
+    Returns the written object_name, or None if row was skipped.
+    """
+    from tcg_platform.scraping.ebay_utils import extract_item_id
+
+    event_id = extract_item_id(row.get("source_url") or "")
+    if event_id.startswith("http"):
+        _LOG.warning(f"Skipping row: no item_id in source_url {row.get('source_url')!r}")
+        return None
+
+    row = {**row, "event_id": event_id}
+
+    prefix = f"{bucket}/{region.lower()}/"
+    base_path = f"{prefix}{event_id}.parquet"
+    target_path = _resolve_collision_path(minio_client, prefix, base_path, event_id, row)
+
+    pdf = pd.DataFrame([row])
+    for col in pdf.columns:
+        if pdf[col].dtype == object:
+            pdf[col] = pdf[col].fillna("")
+        elif pdf[col].dtype.name.startswith("float"):
+            pdf[col] = pdf[col].fillna(0.0)
+    table = pa.Table.from_pandas(pdf, preserve_index=False)
 
     buf = io.BytesIO()
     pq.write_table(table, buf, use_dictionary=False)
     data = buf.getvalue()
 
-    object_name = f"{dest_prefix}/data.parquet"
     minio_client.put_object(
         bucket_name="tcg-silver",
-        object_name=object_name,
+        object_name=target_path,
         data=data,
         length=len(data),
         content_type="application/parquet",
     )
-    return table.num_rows
+    return target_path
 
 
 def _run_silver_transform(spark, minio_client, region: str) -> dict:
