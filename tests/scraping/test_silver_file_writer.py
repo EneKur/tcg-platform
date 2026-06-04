@@ -6,11 +6,11 @@ def test_cleanup_deletes_legacy_aggregated_files():
     minio_client = MagicMock()
     minio_client.bucket_name = "tcg-bronze"  # unused, kept for interface
 
-    # list_objects returns names matching the requested prefix
+    # list_objects returns names matching the requested full-path prefix
     def fake_list(bucket, prefix=""):
-        if prefix == "data/de/":
+        if prefix == "data/de/data.parquet":
             return ["data/de/data.parquet"]
-        if prefix == "quarantine/de/":
+        if prefix == "quarantine/de/data.parquet":
             return ["quarantine/de/data.parquet"]
         return []
 
