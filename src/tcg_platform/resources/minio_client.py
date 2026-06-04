@@ -106,9 +106,7 @@ class MinioClientResource(ConfigurableResource):
             raise RuntimeError("MinIO client not initialized")
         try:
             errors = list(self._client.remove_objects(bucket_name, delete_list))
-            if errors:
-                for err in errors:
-                    _ = err  # logged; partial delete is acceptable for cleanup
+            # partial-delete errors are silently tolerated; legacy cleanup is idempotent
         except S3Error as e:
             raise RuntimeError(f"Failed to remove objects: {e}")
 
