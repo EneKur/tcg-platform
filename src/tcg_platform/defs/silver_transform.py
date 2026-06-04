@@ -132,6 +132,40 @@ def _get_object_names(minio_client, bucket: str, prefix: str) -> list[str]:
     return names
 
 
+def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
+    """Delete the old aggregated data.parquet files (one-time cleanup).
+
+    On the first run after this change, the silver bucket still contains
+    the legacy aggregated files:
+        tcg-silver/data/{region}/data.parquet
+        tcg-silver/quarantine/{region}/data.parquet
+
+    Delete them so only per-item-id files remain. Subsequent runs are
+    no-ops because the files are already gone.
+    """
+    legacy_paths = [
+        f"data/{region.lower()}/data.parquet",
+        f"quarantine/{region.lower()}/data.parquet",
+    ]
+    legacy_prefixes = [
+        f"data/{region.lower()}/",
+        f"quarantine/{region.lower()}/",
+    ]
+    for prefix, legacy_path in zip(legacy_prefixes, legacy_paths):
+        try:
+            existing = minio_client.list_objects("tcg-silver", prefix=prefix)
+        except Exception as e:
+            _LOG.warning(f"Cleanup list failed for {prefix}: {e}")
+            continue
+        to_delete = [name for name in existing if name == legacy_path]
+        if to_delete:
+            try:
+                minio_client.remove_objects("tcg-silver", to_delete)
+                _LOG.info(f"Deleted legacy {len(to_delete)} file(s) at {prefix}")
+            except Exception as e:
+                _LOG.warning(f"Cleanup remove failed for {prefix}: {e}")
+
+
 def _write_parquet(minio_client, table: pa.Table, dest_prefix: str) -> int:
     """Write a PyArrow Table as a single parquet file to MinIO tcg-silver bucket."""
     if table.num_rows == 0:
