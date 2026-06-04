@@ -26,6 +26,8 @@ def test_cleanup_deletes_legacy_aggregated_files():
         args, _ = call
         # remove_objects(bucket_name, [DeleteObject, ...])
         for obj in args[1]:
-            removed_paths.append(obj.object_name if hasattr(obj, "object_name") else obj)
+            # DeleteObject has .name, not .object_name
+            name = getattr(obj, "name", None) or getattr(obj, "object_name", None) or str(obj)
+            removed_paths.append(name)
     assert "data/de/data.parquet" in removed_paths
     assert "quarantine/de/data.parquet" in removed_paths

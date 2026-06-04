@@ -143,27 +143,26 @@ def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
     Delete them so only per-item-id files remain. Subsequent runs are
     no-ops because the files are already gone.
     """
+    from minio.deleteobjects import DeleteObject
+
     legacy_paths = [
         f"data/{region.lower()}/data.parquet",
         f"quarantine/{region.lower()}/data.parquet",
     ]
-    legacy_prefixes = [
-        f"data/{region.lower()}/",
-        f"quarantine/{region.lower()}/",
-    ]
-    for prefix, legacy_path in zip(legacy_prefixes, legacy_paths):
+    for path in legacy_paths:
         try:
-            existing = minio_client.list_objects("tcg-silver", prefix=prefix)
+            existing = minio_client.list_objects("tcg-silver", prefix=path)
         except Exception as e:
-            _LOG.warning(f"Cleanup list failed for {prefix}: {e}")
+            _LOG.warning(f"Cleanup list failed for {path}: {e}")
             continue
-        to_delete = [name for name in existing if name == legacy_path]
-        if to_delete:
-            try:
-                minio_client.remove_objects("tcg-silver", to_delete)
-                _LOG.info(f"Deleted legacy {len(to_delete)} file(s) at {prefix}")
-            except Exception as e:
-                _LOG.warning(f"Cleanup remove failed for {prefix}: {e}")
+        if not existing:
+            continue
+        to_delete = [DeleteObject(name) for name in existing]
+        try:
+            minio_client.remove_objects("tcg-silver", to_delete)
+            _LOG.info(f"Deleted legacy {len(to_delete)} file(s) at {path}")
+        except Exception as e:
+            _LOG.warning(f"Cleanup remove failed for {path}: {e}")
 
 
 def _write_parquet(minio_client, table: pa.Table, dest_prefix: str) -> int:
