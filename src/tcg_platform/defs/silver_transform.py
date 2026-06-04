@@ -363,27 +363,44 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
     _LOG.info(f"[{region}] Valid: {valid_count}, Quarantine: {quarantine_count}")
 
     sample_rows = []
+
+    # Cleanup legacy aggregated files from before the per-item-id change
+    _cleanup_legacy_aggregated_files(minio_client, region)
+
+    # Write valid rows to data/{region}/{event_id}.parquet
     if valid_count > 0:
         valid_pdf = valid_df.toPandas()
-        _LOG.info(f"Valid PDF dtypes: {dict(valid_pdf.dtypes)}")
         for col in valid_pdf.columns:
             if valid_pdf[col].dtype == object:
                 valid_pdf[col] = valid_pdf[col].fillna("")
-            elif valid_pdf[col].dtype == "float64" or valid_pdf[col].dtype.name.startswith("float"):
+            elif valid_pdf[col].dtype.name.startswith("float"):
                 valid_pdf[col] = valid_pdf[col].fillna(0.0)
-        valid_pa = pa.Table.from_pandas(valid_pdf, preserve_index=False)
-        _write_parquet(minio_client, valid_pa, f"data/{region.lower()}")
+        written_valid = 0
+        for _, row in valid_pdf.iterrows():
+            result_path = _write_silver_parquet(
+                minio_client, region, "data", row.to_dict()
+            )
+            if result_path is not None:
+                written_valid += 1
+        _LOG.info(f"[{region}] Wrote {written_valid} valid per-item-id files")
         sample_rows = valid_pdf.head(5).to_dict(orient="records")
 
+    # Write quarantined rows to quarantine/{region}/{event_id}.parquet
     if quarantine_count > 0:
         quarantine_pdf = quarantine_df.toPandas()
         for col in quarantine_pdf.columns:
             if quarantine_pdf[col].dtype == object:
                 quarantine_pdf[col] = quarantine_pdf[col].fillna("")
-            elif quarantine_pdf[col].dtype == "float64" or quarantine_pdf[col].dtype.name.startswith("float"):
+            elif quarantine_pdf[col].dtype.name.startswith("float"):
                 quarantine_pdf[col] = quarantine_pdf[col].fillna(0.0)
-        quarantine_pa = pa.Table.from_pandas(quarantine_pdf, preserve_index=False)
-        _write_parquet(minio_client, quarantine_pa, f"quarantine/{region.lower()}")
+        written_quarantine = 0
+        for _, row in quarantine_pdf.iterrows():
+            result_path = _write_silver_parquet(
+                minio_client, region, "quarantine", row.to_dict()
+            )
+            if result_path is not None:
+                written_quarantine += 1
+        _LOG.info(f"[{region}] Wrote {written_quarantine} quarantine per-item-id files")
 
     return {"valid": valid_count, "quarantine": quarantine_count, "sample": sample_rows}
 
