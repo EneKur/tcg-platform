@@ -2,7 +2,7 @@ import io
 import requests
 from minio.error import S3Error
 
-from tcg_platform.scraping.ebay import extract_item_image_url
+from tcg_platform.scraping.ebay_utils import extract_item_image_url
 
 
 def download_and_save_image(
