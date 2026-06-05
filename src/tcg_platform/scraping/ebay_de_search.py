@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from html import unescape
 
-DE_SEARCH_URL = (
+DE_SEARCH_BASE = (
     "https://www.ebay.de/sch/i.html"
     "?_nkw=One+Piece+TCG+PSA+10"
     "&_sacat=0"
@@ -18,6 +18,10 @@ DE_SEARCH_URL = (
     "&rt=nc"
     "&LH_Sold=1"
 )
+
+
+def search_url_for_page(page: int) -> str:
+    return f"{DE_SEARCH_BASE}&_pgn={page}"
 
 # Match the date text in a Verkauft span: "Verkauft  3. Jun 2026"
 # Note: double space after "Verkauft" and period after the day.

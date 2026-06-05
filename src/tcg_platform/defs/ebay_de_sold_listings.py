@@ -13,7 +13,7 @@ import dagster as dg
 
 from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
 from tcg_platform.scraping.ebay_de_search import (
-    DE_SEARCH_URL,
+    search_url_for_page,
     parse_ebay_de_search_page,
 )
 from tcg_platform.scraping.ebay_image import (
@@ -35,74 +35,81 @@ def ebay_de_sold_listings(context: dg.AssetExecutionContext) -> list:
     already_seen = sqlite_client.get_seen_ebay_item_ids()
     context.log.info(f"Known item IDs in DE DB: {len(already_seen)}")
 
-    # 1. Fetch the search page (1 Zyte call).
-    resp = zyte_client.get({"url": DE_SEARCH_URL, "browserHtml": True})
-    if resp.get("statusCode") != 200:
-        context.log.warning(f"Search page returned {resp.get('statusCode')}")
-        return []
-    html = resp.get("browserHtml", "")
-    if not html:
-        context.log.info("Empty search page")
-        return []
-
-    # 2. Parse (item_url, sold_date) pairs.
-    pairs = parse_ebay_de_search_page(html)
-    context.log.info(f"Search page: {len(pairs)} items")
-
     records = []
     scraped_at = datetime.now(timezone.utc)
+    page = 1
 
-    # 3. For each new item: fetch item page, parse, attach date.
-    for item_url, sold_date in pairs:
-        item_id = extract_item_id(item_url)
-        if item_id in already_seen:
-            continue
+    while True:
+        search_url = search_url_for_page(page)
+        context.log.info(f"Fetching DE search page {page}: {search_url}")
 
-        try:
-            item_resp = zyte_client.get(
-                {"url": item_url, "browserHtml": True}
-            )
-            if item_resp.get("statusCode") != 200:
+        resp = zyte_client.get({"url": search_url, "browserHtml": True})
+        if resp.get("statusCode") != 200:
+            context.log.warning(f"Search page {page} returned {resp.get('statusCode')}")
+            break
+        html = resp.get("browserHtml", "")
+        if not html:
+            context.log.info(f"Empty search page {page}")
+            break
+
+        pairs = parse_ebay_de_search_page(html)
+        context.log.info(f"Page {page}: {len(pairs)} items parsed")
+
+        if not pairs:
+            context.log.info(f"Page {page} returned no items — end of results")
+            break
+
+        for item_url, sold_date in pairs:
+            item_id = extract_item_id(item_url)
+            if item_id in already_seen:
                 continue
-            item_html = item_resp.get("browserHtml", "")
-            if not item_html:
+
+            try:
+                item_resp = zyte_client.get(
+                    {"url": item_url, "browserHtml": True}
+                )
+                if item_resp.get("statusCode") != 200:
+                    continue
+                item_html = item_resp.get("browserHtml", "")
+                if not item_html:
+                    continue
+
+                parsed = parse_ebay_de_item_page(item_html, item_url, scraped_at)
+                if not parsed:
+                    continue
+
+                image_url = extract_item_image_url(item_html)
+                image_path = None
+                if not image_exists_in_minio(minio_client, item_id, "DE"):
+                    image_path = download_and_save_image(
+                        item_id, "DE", item_html, minio_client
+                    )
+                else:
+                    image_path = f"sold_images/DE/{item_id}.jpg"
+
+                for rec in parsed:
+                    rec.image_url = image_url
+                    rec.local_image_path = image_path
+                    rec.sold_date = sold_date or None
+
+                    item_id_for_rec = extract_item_id(rec.source_url)
+                    parquet_bytes, _ = price_records_to_parquet(
+                        [rec], rec.scraped_at.strftime("%Y-%m-%d")
+                    )
+                    minio_client.put_object(
+                        bucket_name=minio_client.bucket_name,
+                        object_name=f"sold_data/DE/{item_id_for_rec}.parquet",
+                        data=parquet_bytes,
+                        length=len(parquet_bytes),
+                        content_type="application/parquet",
+                    )
+
+                records.extend(parsed)
+            except Exception as e:
+                context.log.warning(f"Failed to scrape {item_url}: {e}")
                 continue
 
-            parsed = parse_ebay_de_item_page(item_html, item_url, scraped_at)
-            if not parsed:
-                continue
+        page += 1
 
-            # Image URL + download.
-            image_url = extract_item_image_url(item_html)
-            image_path = None
-            if not image_exists_in_minio(minio_client, item_id, "DE"):
-                image_path = download_and_save_image(
-                    item_id, "DE", item_html, minio_client
-                )
-            else:
-                image_path = f"sold_images/DE/{item_id}.jpg"
-
-            for rec in parsed:
-                rec.image_url = image_url
-                rec.local_image_path = image_path
-                rec.sold_date = sold_date or None
-
-                item_id_for_rec = extract_item_id(rec.source_url)
-                parquet_bytes, _ = price_records_to_parquet(
-                    [rec], rec.scraped_at.strftime("%Y-%m-%d")
-                )
-                minio_client.put_object(
-                    bucket_name=minio_client.bucket_name,
-                    object_name=f"sold_data/DE/{item_id_for_rec}.parquet",
-                    data=parquet_bytes,
-                    length=len(parquet_bytes),
-                    content_type="application/parquet",
-                )
-
-            records.extend(parsed)
-        except Exception as e:
-            context.log.warning(f"Failed to scrape {item_url}: {e}")
-            continue
-
-    context.log.info(f"Scraped {len(records)} new DE sold listing records")
+    context.log.info(f"Scraped {len(records)} new DE sold listing records across {page - 1} pages")
     return records
