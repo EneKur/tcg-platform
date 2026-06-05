@@ -102,14 +102,25 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 > **COMPLETE:** Zyte API working for eBay DE + UK sold listings. Inline per-item parquet write per `2026-05-27-sold-data-parquet-design.md`. Backfill sensor + job also in place.
 
 - [x] ~~**M6-T1**~~ — Create `ZyteSessionResource` for eBay (uses Zyte API instead of Steel)
-- [x] ~~**M6-T2**~~ — Scraping pipeline: eBay DE + UK (PSA grades 1-10 → fact_events → SQLite + MinIO parquet inline)
+- [x] ~~**M6-T2**~~ — Scraping pipeline: eBay DE + UK (PSA grades 1-10 → fact_events → SQLite + MinIO parquet inline) — **SUPERSEDED by M6.5-T1**
 - [x] ~~**M6-T3**~~ — Create `log/M6-T1.md` through `log/M6-T2.md`
+
+### Milestone 6.5: eBay Scraper Redesign — Per-Region Parsers (M6.5)
+> **M6.5-T1 COMPLETE:** Replaced the shared `ebay.py` parser with region-specific DE + UK modules. Sold date is now extracted from the search-page green "Sold D Mon YYYY" (UK) / "Verkauft D. Mon YYYY" (DE) text — was 99% null on UK rows before.
+
+- [x] **M6.5-T1** — Region-specific DE + UK parsers (no shared logic):
+  - `ebay_de_search.py` / `ebay_uk_search.py` — search-page parsers (URL + date)
+  - `ebay_de_item.py` / `ebay_uk_item.py` — item-page parsers (price, currency, title, image)
+  - `ebay_utils.py` — shared `extract_item_id` and `extract_item_image_url` utilities
+  - `src/tcg_platform/scraping/ebay.py` — DELETED
+  - Dead US-scrape scripts (`scripts/scrape_uk*.py`, `verify_lang_proxy*.py`) — DELETED
+  - New URLs: TCG category (`_dcat=183454`), English-only, UK/DE local, sold only, sort by newest
 
 ### Milestone 7: Silver Layer — Lakehouse Processing (M7)
 > **M7-T1 COMPLETE:** LakeSail (pysail) integrated as local Spark-alternative via Spark Connect. PyArrow `from_pandas()` for DataFrame→Parquet conversion. P card normalization added (`P\d+` pattern, `P-XXX` format). PySpark 4.1+ via Spark Connect (`sc://localhost:{port}`). PyArrow fs for MinIO read/write (no Hadoop jars).
 
 - [x] **M7-T1** — Evaluate and integrate LakeSail as Spark replacement for local lakehouse processing
-- [x] **M7-T2** — Wire silver DE/UK/EU pipelines (valid card_ids → `tcg-silver/data/{region}/`, invalid → `tcg-silver/quarantine/{region}/`)
+- [x] **M7-T2** — Wire silver DE/UK/EU pipelines (valid card_ids → `tcg-silver/data/{region}/{event_id}.parquet`, invalid → `tcg-silver/quarantine/{region}/{event_id}.parquet`; `event_id` = eBay item_id, one file per item, collision check via `(sold_date, event_id, title)` tuple; see `log/M7-T2-update.md` for the per-item-id refactor)
 - [x] **M7-T3** — Define silver layer transformations (card_id normalization, `title` field capture, quarantine logic)
 - [ ] **M7-T4** — Create `log/M7-T1.md` through `log/M7-T3.md` (pending)
 

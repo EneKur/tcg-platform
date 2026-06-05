@@ -1,5 +1,5 @@
 import pytest
-from tcg_platform.scraping.ebay import extract_item_image_url
+from tcg_platform.scraping.ebay_utils import extract_item_image_url
 
 
 def test_extract_item_image_url():

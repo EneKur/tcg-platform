@@ -11,8 +11,12 @@ from pysail.spark import SparkConnectServer
 from pyspark.sql import SparkSession
 from pyspark.sql.types import BooleanType, StructType, StructField, StringType, DoubleType
 
+from tcg_platform.scraping.ebay_utils import extract_item_id
+
 
 _LOG = logging.getLogger(__name__)
+
+SILVER_BUCKET = "tcg-silver"
 
 _BRONZE_SCHEMA = StructType([
     StructField("event_id", StringType(), True),
@@ -85,6 +89,37 @@ def _is_complete_card_id(extracted: str) -> bool:
     return len(upper) > 2 and upper[2:].isdigit()
 
 
+def is_valid_card_id(cid, card_ids_set: set[str]) -> bool:
+    """Check whether a card_id is in the valid set.
+
+    Accepts both:
+    - Already-normalized form ("OP11-080", "ST13-003", "P-014")
+    - Unnormalized form ("OP11080", "ST13003", "P014")
+
+    Returns False for set-code-only inputs ("OP11", "PRB02") and garbage.
+    """
+    if not cid:
+        return False
+    upper = cid.upper().strip()
+    # Already-normalized: try the raw input first. The new M6.5-T1 scraper
+    # emits card_ids in their final form; we shouldn't re-extract the set
+    # code and lose the card-specific number.
+    if upper in card_ids_set:
+        return True
+    m = _VALID_SET_RE.search(upper)
+    if not m:
+        return False
+    extracted = m.group(0).upper()
+    if not _is_complete_card_id(extracted):
+        return False
+    normalized = _normalize_extracted_id(extracted)
+    if normalized and normalized in card_ids_set:
+        return True
+    if extracted in card_ids_set:
+        return True
+    return False
+
+
 def _build_card_id_set(minio_client, bucket: str) -> set[str]:
     """Read valid card_ids from MinIO cards/ directory structure.
 
@@ -132,49 +167,185 @@ def _get_object_names(minio_client, bucket: str, prefix: str) -> list[str]:
     return names
 
 
-def _write_parquet(minio_client, table: pa.Table, dest_prefix: str) -> int:
-    """Write a PyArrow Table as a single parquet file to MinIO tcg-silver bucket."""
-    if table.num_rows == 0:
-        return 0
+def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
+    """Delete the old aggregated data.parquet files (one-time cleanup).
+
+    On the first run after this change, the silver bucket still contains
+    the legacy aggregated files:
+        tcg-silver/data/{region}/data.parquet
+        tcg-silver/quarantine/{region}/data.parquet
+
+    Delete them so only per-item-id files remain. Subsequent runs are
+    no-ops because the files are already gone.
+    """
+    from minio.deleteobjects import DeleteObject
+
+    legacy_paths = [
+        f"data/{region.lower()}/data.parquet",
+        f"quarantine/{region.lower()}/data.parquet",
+    ]
+    for path in legacy_paths:
+        try:
+            existing = minio_client.list_objects(SILVER_BUCKET, prefix=path)
+        except Exception as e:
+            _LOG.warning(f"Cleanup list failed for {path}: {e}")
+            continue
+        if not existing:
+            continue
+        to_delete = [DeleteObject(name) for name in existing]
+        try:
+            minio_client.remove_objects(SILVER_BUCKET, to_delete)
+            _LOG.info(f"Deleted legacy {len(to_delete)} file(s) at {path}")
+        except Exception as e:
+            _LOG.warning(f"Cleanup remove failed for {path}: {e}")
+
+
+def _extract_identity_tuple(table: pa.Table) -> tuple:
+    """Extract the (sold_date, event_id, title) tuple from a single-row table.
+
+    Missing columns (e.g. title isn't in the bronze schema) are treated
+    as "" — matching what the writer would produce for a row with no
+    title field, so re-runs with missing columns still deduplicate.
+
+    Float sentinel values (e.g. 0.0) are also treated as "" — the
+    pre-fix writer stored an all-None title column as float64(0.0),
+    and we want collision checks against those legacy files to
+    recognize them as equivalent to a missing title.
+    """
+    def _col(name: str) -> str:
+        if name not in table.column_names:
+            return ""
+        val = table.column(name).to_pylist()[0]
+        if val is None or val == 0 or val == 0.0:
+            return ""
+        return val
+    return (_col("sold_date"), _col("event_id"), _col("title"))
+
+
+def _resolve_collision_path(
+    minio_client,
+    prefix: str,
+    base_path: str,
+    event_id: str,
+    row: dict,
+) -> str:
+    """Find the path to write to: base, _x matching, or first free _x.
+
+    Strategy:
+      1. If base_path doesn't exist → return base_path.
+      2. Read base file. If (sold_date, event_id, title) matches → return base_path.
+      3. Try _1, _2, ... in order. For each: if it doesn't exist → return it.
+         If it exists and tuple matches → return it (overwrite matching).
+         If it exists and tuple differs → continue.
+    """
+    new_tuple = (row.get("sold_date") or "", event_id, row.get("title") or "")
+
+    existing = minio_client.list_objects(SILVER_BUCKET, prefix=prefix)
+    # Files in the prefix belonging to this event_id (base or any _x suffix).
+    # We need to check ALL of them, not just the base — otherwise a missing
+    # base + present _1 would be treated as "no collision" and the base
+    # path would silently overwrite something unrelated to the same item.
+    same_id = [
+        name for name in existing
+        if name == base_path or name.startswith(f"{prefix}{event_id}_")
+    ]
+    if not same_id:
+        return base_path
+
+    def _read_tuple(path: str) -> tuple | None:
+        """Read existing file's identity tuple, or None on read failure."""
+        try:
+            data = minio_client.get_object(SILVER_BUCKET, path)
+            existing_table = pq.read_table(io.BytesIO(data))
+            return _extract_identity_tuple(existing_table)
+        except Exception as e:
+            _LOG.warning(f"Failed to read existing {path} for collision check: {e}")
+            return None
+
+    # Check the base path first.
+    if base_path in same_id:
+        existing_tuple = _read_tuple(base_path)
+        if existing_tuple == new_tuple:
+            return base_path
+        # Read failure on base → don't overwrite; fall through to suffix search.
+
+    # Then check each _x suffix in order. A read failure on a suffix means
+    # the file is corrupt; overwriting it with the new (valid) data is
+    # safer than skipping (the corrupt data is meaningless anyway).
+    suffix = 1
+    while True:
+        candidate = f"{prefix}{event_id}_{suffix}.parquet"
+        if candidate not in same_id:
+            return candidate
+        existing_tuple = _read_tuple(candidate)
+        if existing_tuple is None or existing_tuple == new_tuple:
+            return candidate
+        suffix += 1
+
+
+def _write_silver_parquet(
+    minio_client,
+    region: str,
+    bucket: str,
+    row: dict,
+) -> str | None:
+    """Write a single silver row to a per-item-id parquet file.
+
+    Layout: tcg-silver/{bucket}/{region}/{event_id}.parquet (or _{x}.parquet
+    on collision). The event_id is extracted from source_url via
+    extract_item_id(). Collision check uses the (sold_date, event_id, title)
+    tuple: if all three match an existing file, overwrite in place; if any
+    differ, find the next free _x suffix.
+
+    Returns the written object_name, or None if row was skipped.
+    """
+    event_id = extract_item_id(row.get("source_url") or "")
+    if event_id.startswith("http"):
+        _LOG.warning(f"Skipping row: no item_id in source_url {row.get('source_url')!r}")
+        return None
+
+    row = {**row, "event_id": event_id}
+
+    # Spark's toPandas() converts None to NaN (a float) for str-dtype
+    # columns. The collision-check tuple must compare apples to apples,
+    # so normalize NaN/None to "" here, then build the tuple.
+    row.setdefault("title", "")
+    row = {k: ("" if v is None or (isinstance(v, float) and pd.isna(v)) else v) for k, v in row.items()}
+
+    prefix = f"{bucket}/{region.lower()}/"
+    base_path = f"{prefix}{event_id}.parquet"
+    target_path = _resolve_collision_path(minio_client, prefix, base_path, event_id, row)
+
+    pdf = pd.DataFrame([row])
+    for col in pdf.columns:
+        if pdf[col].dtype == object:
+            pdf[col] = pdf[col].fillna("")
+        elif pdf[col].dtype.name.startswith("float"):
+            pdf[col] = pdf[col].fillna(0.0)
+    table = pa.Table.from_pandas(pdf, preserve_index=False)
 
     buf = io.BytesIO()
     pq.write_table(table, buf, use_dictionary=False)
     data = buf.getvalue()
 
-    object_name = f"{dest_prefix}/data.parquet"
     minio_client.put_object(
-        bucket_name="tcg-silver",
-        object_name=object_name,
+        bucket_name=SILVER_BUCKET,
+        object_name=target_path,
         data=data,
         length=len(data),
         content_type="application/parquet",
     )
-    return table.num_rows
+    return target_path
 
 
 def _run_silver_transform(spark, minio_client, region: str) -> dict:
     """Read bronze parquets, validate card_ids via Spark, write to silver bucket."""
     valid_card_ids = _build_card_id_set(minio_client, "tcg-bronze")
 
-    def make_is_valid(card_ids_set):
-        def is_valid(cid: str) -> bool:
-            if not cid:
-                return False
-            m = _VALID_SET_RE.search(cid)
-            if not m:
-                return False
-            extracted = m.group(0).upper()
-            if not _is_complete_card_id(extracted):
-                return False
-            normalized = _normalize_extracted_id(extracted)
-            if normalized and normalized in card_ids_set:
-                return True
-            if extracted in card_ids_set:
-                return True
-            return False
-        return is_valid
+    def is_valid_udf(cid: str) -> bool:
+        return is_valid_card_id(cid, valid_card_ids)
 
-    is_valid_fn = make_is_valid(valid_card_ids)
+    is_valid_fn = is_valid_udf
     spark.udf.register("is_valid_card_id", is_valid_fn, BooleanType())
 
     def make_extract(cid):
@@ -227,27 +398,49 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
     _LOG.info(f"[{region}] Valid: {valid_count}, Quarantine: {quarantine_count}")
 
     sample_rows = []
+
+    # Cleanup legacy aggregated files from before the per-item-id change
+    _cleanup_legacy_aggregated_files(minio_client, region)
+
+    # NOTE: _write_silver_parquet does one MinIO list_objects per row (O(N)
+    # round-trips per run). Negligible at current scale (tens of rows). If row
+    # counts reach the thousands, batch this by pre-listing each prefix once
+    # and passing the existing-file set into the writer.
+
+    # Write valid rows to data/{region}/{event_id}.parquet.
+    # NaN values are normalized inside _write_silver_parquet; we only fill the
+    # valid frame here so the sample_rows metadata below is NaN-free.
+    # Note: Spark's toPandas infers string columns as dtype 'str', not
+    # 'object', so we check by dtype kind (O for object, S for string) too.
     if valid_count > 0:
         valid_pdf = valid_df.toPandas()
-        _LOG.info(f"Valid PDF dtypes: {dict(valid_pdf.dtypes)}")
         for col in valid_pdf.columns:
-            if valid_pdf[col].dtype == object:
+            if valid_pdf[col].dtype == object or valid_pdf[col].dtype.name in ("str", "string"):
                 valid_pdf[col] = valid_pdf[col].fillna("")
-            elif valid_pdf[col].dtype == "float64" or valid_pdf[col].dtype.name.startswith("float"):
+            elif valid_pdf[col].dtype.name.startswith("float"):
                 valid_pdf[col] = valid_pdf[col].fillna(0.0)
-        valid_pa = pa.Table.from_pandas(valid_pdf, preserve_index=False)
-        _write_parquet(minio_client, valid_pa, f"data/{region.lower()}")
+        written_valid = 0
+        for _, row in valid_pdf.iterrows():
+            result_path = _write_silver_parquet(
+                minio_client, region, "data", row.to_dict()
+            )
+            if result_path is not None:
+                written_valid += 1
+        _LOG.info(f"[{region}] Wrote {written_valid} valid per-item-id files")
         sample_rows = valid_pdf.head(5).to_dict(orient="records")
 
+    # Write quarantined rows to quarantine/{region}/{event_id}.parquet.
+    # No fillna here — _write_silver_parquet normalizes NaN per row.
     if quarantine_count > 0:
         quarantine_pdf = quarantine_df.toPandas()
-        for col in quarantine_pdf.columns:
-            if quarantine_pdf[col].dtype == object:
-                quarantine_pdf[col] = quarantine_pdf[col].fillna("")
-            elif quarantine_pdf[col].dtype == "float64" or quarantine_pdf[col].dtype.name.startswith("float"):
-                quarantine_pdf[col] = quarantine_pdf[col].fillna(0.0)
-        quarantine_pa = pa.Table.from_pandas(quarantine_pdf, preserve_index=False)
-        _write_parquet(minio_client, quarantine_pa, f"quarantine/{region.lower()}")
+        written_quarantine = 0
+        for _, row in quarantine_pdf.iterrows():
+            result_path = _write_silver_parquet(
+                minio_client, region, "quarantine", row.to_dict()
+            )
+            if result_path is not None:
+                written_quarantine += 1
+        _LOG.info(f"[{region}] Wrote {written_quarantine} quarantine per-item-id files")
 
     return {"valid": valid_count, "quarantine": quarantine_count, "sample": sample_rows}
 
