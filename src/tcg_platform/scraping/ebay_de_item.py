@@ -61,7 +61,9 @@ def _normalize_card_id(title: str) -> tuple[str, str | None]:
     t = t.strip().replace(" ", "_")[:100]
     m = _SET_CODE_RE.search(t)
     if not m:
-        return t, None
+        # No recognizable set code (OP/EB/ST/PRB/P + digits) — caller should
+        # skip the listing. Multi-card bundles and DON cards fall here.
+        return "", None
     raw = m.group(0)
     base = _format_card_id(raw)
     version = t[m.end() :].strip("_")
@@ -100,6 +102,8 @@ def parse_ebay_de_item_page(
 
     # Card id + version.
     card_id, card_version = _normalize_card_id(title)
+    if not card_id:
+        return []
 
     # Price (DE: comma decimal, . thousands separator).
     price_m = _PRICE_PRIMARY_RE.search(html)

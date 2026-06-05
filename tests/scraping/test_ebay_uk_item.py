@@ -61,6 +61,38 @@ def test_parse_returns_empty_on_no_price():
     ) == []
 
 
+def test_parse_skips_title_with_no_recognizable_card_id():
+    # Regression: when the title doesn't contain a recognizable set code
+    # (OP/EB/ST/PRB/P + digits), the parser was returning the entire
+    # normalized title as card_id with empty card_version. This polluted
+    # bronze/SQLite/silver with non-card listings (multi-card bundles,
+    # DON cards). The parser should skip them entirely.
+    # Real examples from 2026-06-05 run:
+    #   "One Piece TCG 2nd Anniversary Winner 3 Cards Luffy Sabo Ace Sequential PSA 10"
+    #   "PSA 10 DON Card Carrying On His Will Foil One Piece TCG"
+    html = """
+    <html><body>
+      <h1 class="x-item-title__mainTitle"><span class="ux-textspans ux-textspans--BOLD">PSA 10 DON Card Carrying On His Will Foil One Piece TCG</span></h1>
+      <div data-testid="x-price-primary"><span class="ux-textspans">£47.49</span></div>
+    </body></html>
+    """
+    assert parse_ebay_uk_item_page(
+        html, "https://www.ebay.co.uk/itm/257501709731", datetime.now(timezone.utc)
+    ) == []
+
+
+def test_parse_skips_multi_card_bundle_title():
+    html = """
+    <html><body>
+      <h1 class="x-item-title__mainTitle"><span class="ux-textspans ux-textspans--BOLD">One Piece TCG 2nd Anniversary Winner 3 Cards Luffy Sabo Ace Sequential PSA 10</span></h1>
+      <div data-testid="x-price-primary"><span class="ux-textspans">£999.99</span></div>
+    </body></html>
+    """
+    assert parse_ebay_uk_item_page(
+        html, "https://www.ebay.co.uk/itm/168427997844", datetime.now(timezone.utc)
+    ) == []
+
+
 def test_parse_with_real_fixture_extracts_record():
     html = FIXTURE.read_text(encoding="utf-8")
     records = parse_ebay_uk_item_page(
