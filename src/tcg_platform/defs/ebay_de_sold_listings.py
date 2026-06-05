@@ -6,11 +6,15 @@ extracts price/currency/image. The search-page sold_date is attached to the
 PriceRecord before returning.
 
 Idempotency: re-runs skip item_ids already in the DE SQLite fact_events table.
+SQLite is updated atomically per item after the MinIO write succeeds, so the
+already_seen set stays current within a single scrape run — eBay can show the
+same item on multiple search pages without causing duplicate Zyte calls.
 """
 from datetime import datetime, timezone
 
 import dagster as dg
 
+from tcg_platform.defs.bronze_ebay_sqlite_writer import _is_proxy_title
 from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
 from tcg_platform.scraping.ebay_de_search import (
     search_url_for_page,
@@ -124,6 +128,33 @@ def ebay_de_sold_listings(context: dg.AssetExecutionContext) -> list:
                         length=len(parquet_bytes),
                         content_type="application/parquet",
                     )
+
+                    if not _is_proxy_title(rec.card_id):
+                        sqlite_client.execute(
+                            """
+                            INSERT OR IGNORE INTO fact_events
+                                (card_id, card_version, event_type, price, currency,
+                                 sold_date, scraped_from, source, source_url, language,
+                                 scraped_at, image_url, local_image_path, parqueted)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                            """,
+                            (
+                                rec.card_id,
+                                rec.card_version or "",
+                                rec.event_type,
+                                rec.price,
+                                rec.currency,
+                                rec.sold_date or "",
+                                rec.scraped_from,
+                                rec.source,
+                                rec.source_url,
+                                rec.language,
+                                rec.scraped_at.isoformat() if hasattr(rec.scraped_at, "isoformat") else str(rec.scraped_at),
+                                rec.image_url or "",
+                                rec.local_image_path or "",
+                            ),
+                        )
+                        already_seen.add(item_id_for_rec)
 
                 records.extend(parsed)
             except Exception as e:
