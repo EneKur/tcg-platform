@@ -43,6 +43,7 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
     scraped_at = datetime.now(timezone.utc)
     page = 1
     empty_streak = 0
+    empty_parse_streak = 0
     EMPTY_STREAK_THRESHOLD = 5
 
     while True:
@@ -84,6 +85,7 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
         else:
             empty_streak = 0
 
+        page_had_writes = False
         for item_url, sold_date in pairs:
             item_id = extract_item_id(item_url)
             if item_id in already_seen:
@@ -103,6 +105,7 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
                 if not parsed:
                     continue
 
+                page_had_writes = True
                 image_url = extract_item_image_url(item_html)
                 image_path = None
                 if not image_exists_in_minio(minio_client, item_id, "UK"):
@@ -160,6 +163,20 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
             except Exception as e:
                 context.log.warning(f"Failed to scrape {item_url}: {e}")
                 continue
+
+        if not page_had_writes:
+            empty_parse_streak += 1
+            context.log.info(
+                f"Page {page}: all items failed to parse (streak {empty_parse_streak}/{EMPTY_STREAK_THRESHOLD})"
+            )
+            if empty_parse_streak >= EMPTY_STREAK_THRESHOLD:
+                context.log.info(
+                    f"Stopping: {EMPTY_STREAK_THRESHOLD} consecutive pages with no "
+                    "successfully parsed items — eBay may only be showing unparseable listings"
+                )
+                break
+        else:
+            empty_parse_streak = 0
 
         page += 1
 
