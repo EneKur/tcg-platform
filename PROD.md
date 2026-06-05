@@ -120,7 +120,7 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 > **M7-T1 COMPLETE:** LakeSail (pysail) integrated as local Spark-alternative via Spark Connect. PyArrow `from_pandas()` for DataFrame→Parquet conversion. P card normalization added (`P\d+` pattern, `P-XXX` format). PySpark 4.1+ via Spark Connect (`sc://localhost:{port}`). PyArrow fs for MinIO read/write (no Hadoop jars).
 
 - [x] **M7-T1** — Evaluate and integrate LakeSail as Spark replacement for local lakehouse processing
-- [x] **M7-T2** — Wire silver DE/UK/EU pipelines (valid card_ids → `tcg-silver/data/{region}/`, invalid → `tcg-silver/quarantine/{region}/`)
+- [x] **M7-T2** — Wire silver DE/UK/EU pipelines (valid card_ids → `tcg-silver/data/{region}/{event_id}.parquet`, invalid → `tcg-silver/quarantine/{region}/{event_id}.parquet`; `event_id` = eBay item_id, one file per item, collision check via `(sold_date, event_id, title)` tuple; see `log/M7-T2-update.md` for the per-item-id refactor)
 - [x] **M7-T3** — Define silver layer transformations (card_id normalization, `title` field capture, quarantine logic)
 - [ ] **M7-T4** — Create `log/M7-T1.md` through `log/M7-T3.md` (pending)
 
