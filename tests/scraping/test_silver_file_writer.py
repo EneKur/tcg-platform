@@ -246,3 +246,35 @@ def test_suffixed_read_failure_overwrites_corrupt_candidate():
     # _1 should now be overwritten with valid parquet
     table = pq.read_table(io.BytesIO(file_map["data/de/127860244828_1.parquet"]))
     assert table.column("event_id").to_pylist() == ["127860244828"]
+
+
+def test_missing_title_not_stored_as_float():
+    # Regression: when the row has title=None, an all-None pandas column
+    # used to be inferred as float64 and filled with 0.0, which broke
+    # the collision-check tuple. Now None is replaced with "" before the
+    # DataFrame is built, so the column stays as object (or is dropped
+    # entirely if absent from the row dict — matching the bronze schema
+    # which has no title column).
+    file_map = {}
+    minio = _make_minio_with_existing_files(file_map)
+    row = _row_dict()
+    row["title"] = None
+    _write_silver_parquet(minio, "DE", "data", row)
+    table = pq.read_table(io.BytesIO(file_map["data/de/127860244828.parquet"]))
+    title_col = table.column("title")
+    assert str(title_col.type) in ("large_string", "string"), \
+        f"title was stored as {title_col.type}, not string"
+
+
+def test_re_run_overwrites_in_place_when_title_missing():
+    # End-to-end idempotency: write a row with no title, then write the
+    # same row again. The second call should overwrite the base file,
+    # not create a _1.
+    file_map = {}
+    minio = _make_minio_with_existing_files(file_map)
+    row = _row_dict()
+    del row["title"]
+    _write_silver_parquet(minio, "DE", "data", row)
+    _write_silver_parquet(minio, "DE", "data", row)
+    assert "data/de/127860244828.parquet" in file_map
+    assert "data/de/127860244828_1.parquet" not in file_map

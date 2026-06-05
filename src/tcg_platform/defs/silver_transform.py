@@ -170,12 +170,17 @@ def _cleanup_legacy_aggregated_files(minio_client, region: str) -> None:
 
 
 def _extract_identity_tuple(table: pa.Table) -> tuple:
-    """Extract the (sold_date, event_id, title) tuple from a single-row table."""
-    return (
-        table.column("sold_date").to_pylist()[0] or "",
-        table.column("event_id").to_pylist()[0] or "",
-        table.column("title").to_pylist()[0] or "",
-    )
+    """Extract the (sold_date, event_id, title) tuple from a single-row table.
+
+    Missing columns (e.g. title isn't in the bronze schema) are treated
+    as "" — matching what the writer would produce for a row with no
+    title field, so re-runs with missing columns still deduplicate.
+    """
+    def _col(name: str) -> str:
+        if name not in table.column_names:
+            return ""
+        return table.column(name).to_pylist()[0] or ""
+    return (_col("sold_date"), _col("event_id"), _col("title"))
 
 
 def _resolve_collision_path(
@@ -261,6 +266,13 @@ def _write_silver_parquet(
         return None
 
     row = {**row, "event_id": event_id}
+
+    # Ensure string columns that may be absent from the bronze schema
+    # (notably `title`) exist as "" so pandas infers them as object, not
+    # float64. Otherwise the collision-check tuple mismatches on re-run
+    # and spurious _1 files get created.
+    row.setdefault("title", "")
+    row = {k: ("" if v is None else v) for k, v in row.items()}
 
     prefix = f"{bucket}/{region.lower()}/"
     base_path = f"{prefix}{event_id}.parquet"
