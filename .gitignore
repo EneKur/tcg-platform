@@ -66,6 +66,9 @@ data/tcg_de.db
 data/tcg_uk.db
 data/currency_rates.db
 
+# Parser investigation HTMLs (M6.5-T1) - not part of source tree
+data/parser_investigation/
+
 # Flask stuff:
 instance/
 .webassets-cache
