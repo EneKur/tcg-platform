@@ -89,6 +89,37 @@ def _is_complete_card_id(extracted: str) -> bool:
     return len(upper) > 2 and upper[2:].isdigit()
 
 
+def is_valid_card_id(cid, card_ids_set: set[str]) -> bool:
+    """Check whether a card_id is in the valid set.
+
+    Accepts both:
+    - Already-normalized form ("OP11-080", "ST13-003", "P-014")
+    - Unnormalized form ("OP11080", "ST13003", "P014")
+
+    Returns False for set-code-only inputs ("OP11", "PRB02") and garbage.
+    """
+    if not cid:
+        return False
+    upper = cid.upper().strip()
+    # Already-normalized: try the raw input first. The new M6.5-T1 scraper
+    # emits card_ids in their final form; we shouldn't re-extract the set
+    # code and lose the card-specific number.
+    if upper in card_ids_set:
+        return True
+    m = _VALID_SET_RE.search(upper)
+    if not m:
+        return False
+    extracted = m.group(0).upper()
+    if not _is_complete_card_id(extracted):
+        return False
+    normalized = _normalize_extracted_id(extracted)
+    if normalized and normalized in card_ids_set:
+        return True
+    if extracted in card_ids_set:
+        return True
+    return False
+
+
 def _build_card_id_set(minio_client, bucket: str) -> set[str]:
     """Read valid card_ids from MinIO cards/ directory structure.
 
@@ -175,11 +206,19 @@ def _extract_identity_tuple(table: pa.Table) -> tuple:
     Missing columns (e.g. title isn't in the bronze schema) are treated
     as "" — matching what the writer would produce for a row with no
     title field, so re-runs with missing columns still deduplicate.
+
+    Float sentinel values (e.g. 0.0) are also treated as "" — the
+    pre-fix writer stored an all-None title column as float64(0.0),
+    and we want collision checks against those legacy files to
+    recognize them as equivalent to a missing title.
     """
     def _col(name: str) -> str:
         if name not in table.column_names:
             return ""
-        return table.column(name).to_pylist()[0] or ""
+        val = table.column(name).to_pylist()[0]
+        if val is None or val == 0 or val == 0.0:
+            return ""
+        return val
     return (_col("sold_date"), _col("event_id"), _col("title"))
 
 
@@ -267,12 +306,11 @@ def _write_silver_parquet(
 
     row = {**row, "event_id": event_id}
 
-    # Ensure string columns that may be absent from the bronze schema
-    # (notably `title`) exist as "" so pandas infers them as object, not
-    # float64. Otherwise the collision-check tuple mismatches on re-run
-    # and spurious _1 files get created.
+    # Spark's toPandas() converts None to NaN (a float) for str-dtype
+    # columns. The collision-check tuple must compare apples to apples,
+    # so normalize NaN/None to "" here, then build the tuple.
     row.setdefault("title", "")
-    row = {k: ("" if v is None else v) for k, v in row.items()}
+    row = {k: ("" if v is None or (isinstance(v, float) and pd.isna(v)) else v) for k, v in row.items()}
 
     prefix = f"{bucket}/{region.lower()}/"
     base_path = f"{prefix}{event_id}.parquet"
@@ -304,25 +342,10 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
     """Read bronze parquets, validate card_ids via Spark, write to silver bucket."""
     valid_card_ids = _build_card_id_set(minio_client, "tcg-bronze")
 
-    def make_is_valid(card_ids_set):
-        def is_valid(cid: str) -> bool:
-            if not cid:
-                return False
-            m = _VALID_SET_RE.search(cid)
-            if not m:
-                return False
-            extracted = m.group(0).upper()
-            if not _is_complete_card_id(extracted):
-                return False
-            normalized = _normalize_extracted_id(extracted)
-            if normalized and normalized in card_ids_set:
-                return True
-            if extracted in card_ids_set:
-                return True
-            return False
-        return is_valid
+    def is_valid_udf(cid: str) -> bool:
+        return is_valid_card_id(cid, valid_card_ids)
 
-    is_valid_fn = make_is_valid(valid_card_ids)
+    is_valid_fn = is_valid_udf
     spark.udf.register("is_valid_card_id", is_valid_fn, BooleanType())
 
     def make_extract(cid):
@@ -387,10 +410,12 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
     # Write valid rows to data/{region}/{event_id}.parquet.
     # NaN values are normalized inside _write_silver_parquet; we only fill the
     # valid frame here so the sample_rows metadata below is NaN-free.
+    # Note: Spark's toPandas infers string columns as dtype 'str', not
+    # 'object', so we check by dtype kind (O for object, S for string) too.
     if valid_count > 0:
         valid_pdf = valid_df.toPandas()
         for col in valid_pdf.columns:
-            if valid_pdf[col].dtype == object:
+            if valid_pdf[col].dtype == object or valid_pdf[col].dtype.name in ("str", "string"):
                 valid_pdf[col] = valid_pdf[col].fillna("")
             elif valid_pdf[col].dtype.name.startswith("float"):
                 valid_pdf[col] = valid_pdf[col].fillna(0.0)

@@ -278,3 +278,55 @@ def test_re_run_overwrites_in_place_when_title_missing():
     _write_silver_parquet(minio, "DE", "data", row)
     assert "data/de/127860244828.parquet" in file_map
     assert "data/de/127860244828_1.parquet" not in file_map
+
+
+def test_legacy_title_as_float_0_does_not_create_suffix():
+    # Regression: pre-fix silver files stored title=0.0 (pandas filled
+    # an all-None column with 0.0). The new writer stores title="".
+    # A re-run that sees the legacy file must treat 0.0 as equivalent
+    # to "" and overwrite in place, not create a _1.
+    file_map = {}
+    legacy_table = pa.Table.from_pydict({
+        "event_id": ["127860244828"],
+        "card_id": ["OP01-001"],
+        "sold_date": ["2026-06-04"],
+        "title": [0.0],
+    })
+    buf = io.BytesIO()
+    pq.write_table(legacy_table, buf)
+    file_map["data/de/127860244828.parquet"] = buf.getvalue()
+
+    minio = _make_minio_with_existing_files(file_map)
+    # New write — row has no title (matches what we'd write today)
+    row = _row_dict()
+    del row["title"]
+    _write_silver_parquet(minio, "DE", "data", row)
+
+    assert "data/de/127860244828.parquet" in file_map
+    assert "data/de/127860244828_1.parquet" not in file_map
+
+
+def test_nan_title_does_not_create_suffix():
+    # Regression: Spark's toPandas converts None to NaN (a float) for
+    # str-dtype columns. The collision-check tuple must not see a NaN
+    # on the new-write side either, or a re-run will mismatch the
+    # existing file's "" and create a spurious _1.
+    import math
+    file_map = {}
+    existing_table = pa.Table.from_pydict({
+        "event_id": ["127860244828"],
+        "card_id": ["OP01-001"],
+        "sold_date": ["2026-06-04"],
+        "title": [""],
+    })
+    buf = io.BytesIO()
+    pq.write_table(existing_table, buf)
+    file_map["data/de/127860244828.parquet"] = buf.getvalue()
+
+    minio = _make_minio_with_existing_files(file_map)
+    row = _row_dict()
+    row["title"] = math.nan  # what Spark's toPandas actually produces
+    _write_silver_parquet(minio, "DE", "data", row)
+
+    assert "data/de/127860244828.parquet" in file_map
+    assert "data/de/127860244828_1.parquet" not in file_map
