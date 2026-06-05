@@ -38,6 +38,8 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
     records = []
     scraped_at = datetime.now(timezone.utc)
     page = 1
+    empty_streak = 0
+    EMPTY_STREAK_THRESHOLD = 5
 
     while True:
         search_url = search_url_for_page(page)
@@ -58,6 +60,25 @@ def ebay_uk_sold_listings(context: dg.AssetExecutionContext) -> list:
         if not pairs:
             context.log.info(f"Page {page} returned no items — end of results")
             break
+
+        page_item_ids = {extract_item_id(url) for url, _ in pairs}
+        new_item_ids = page_item_ids - already_seen
+        if not new_item_ids:
+            empty_streak += 1
+            context.log.info(
+                f"Page {page}: all {len(pairs)} items already seen "
+                f"(streak {empty_streak}/{EMPTY_STREAK_THRESHOLD})"
+            )
+            if empty_streak >= EMPTY_STREAK_THRESHOLD:
+                context.log.info(
+                    f"Stopping: {EMPTY_STREAK_THRESHOLD} consecutive pages with only "
+                    "already-seen items — history is fully scraped"
+                )
+                break
+            page += 1
+            continue
+        else:
+            empty_streak = 0
 
         for item_url, sold_date in pairs:
             item_id = extract_item_id(item_url)
