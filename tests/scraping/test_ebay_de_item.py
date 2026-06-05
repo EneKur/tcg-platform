@@ -65,6 +65,21 @@ def test_parse_returns_empty_on_no_price():
     assert records == []
 
 
+def test_parse_skips_title_with_no_recognizable_card_id():
+    # Regression: same bug as UK parser — when the title has no
+    # recognizable set code (OP/EB/ST/PRB/P + digits), the parser was
+    # returning the entire normalized title as card_id. Skip instead.
+    html = """
+    <html><body>
+      <h1 class="x-item-title__mainTitle"><span class="ux-textspans ux-textspans--BOLD">PSA 10 DON Card Carrying On His Will Foil One Piece TCG</span></h1>
+      <div data-testid="x-price-primary"><span class="ux-textspans">EUR 47,49</span></div>
+    </body></html>
+    """
+    assert parse_ebay_de_item_page(
+        html, "https://www.ebay.de/itm/257501709731", datetime.now(timezone.utc)
+    ) == []
+
+
 def test_parse_extracts_card_id_from_title():
     # The card_id regex is (OP\d+|EB\d+|ST\d+|PRB\d+|P\d+).
     # The base card_id is the set code + leading digits; the trailing _part becomes card_version.
