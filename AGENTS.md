@@ -96,12 +96,25 @@ Rule 18 — Push Branch to Remote
 git push origin YYYY-MM-DD-{task-id}
 This creates the remote branch but never touches main.
 ---
-Rule 19 — Merge to main is Human-Driven
-When ready to integrate:
-- Create a PR on GitHub, or
-- Ask the human to merge, or
-- git checkout main && git merge --no-ff YYYY-MM-DD-{task-id} locally, then push main
-Force-pushing main is never allowed without explicit human consent.
+Rule 19 — Integrate via PR; Human-Driven Merge
+The agent **never** merges to main and **never** force-pushes. Period.
+
+When a session branch is ready to integrate:
+1. Push the session branch: `git push origin YYYY-MM-DD-{task-id}` (Rule 18)
+2. Open a Pull Request on GitHub targeting main: `gh pr create`
+3. **Stop.** Do not merge. Do not run `gh pr merge`. Do not `git merge` to main locally.
+
+What the agent must not do, ever, without explicit human approval:
+- `gh pr merge` on any PR (own or otherwise)
+- `git merge` to main, fast-forward or `--no-ff`
+- Push directly to main
+- `git push --force` or `git push --force-with-lease` to **any** branch (own or shared)
+- `git rebase` against main in a way that rewrites published history
+- Delete or rewrite the `main` branch
+
+If integration cannot proceed as a PR (e.g., conflicts, no remote access, CI blocks), surface the situation explicitly and wait. Do not work around the rule.
+
+Force-pushing main is never allowed. No exceptions.
 
 ## Session Log
 
