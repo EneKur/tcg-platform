@@ -106,7 +106,7 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 - [x] ~~**M6-T3**~~ — Create `log/M6-T1.md` through `log/M6-T2.md`
 
 ### Milestone 6.5: eBay Scraper Redesign — Per-Region Parsers (M6.5)
-> **M6.5-T1 COMPLETE:** Replaced the shared `ebay.py` parser with region-specific DE + UK modules. Sold date is now extracted from the search-page green "Sold D Mon YYYY" (UK) / "Verkauft D. Mon YYYY" (DE) text — was 99% null on UK rows before.
+> **M6.5 COMPLETE:** Replaced the shared `ebay.py` parser with region-specific DE + UK modules. Sold date is now extracted from the search-page green "Sold D Mon YYYY" (UK) / "Verkauft D. Mon YYYY" (DE) text — was 99% null on UK rows before. Non-card listings (bundles, DON cards) are now filtered at parse time.
 
 - [x] **M6.5-T1** — Region-specific DE + UK parsers (no shared logic):
   - `ebay_de_search.py` / `ebay_uk_search.py` — search-page parsers (URL + date)
@@ -115,14 +115,15 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
   - `src/tcg_platform/scraping/ebay.py` — DELETED
   - Dead US-scrape scripts (`scripts/scrape_uk*.py`, `verify_lang_proxy*.py`) — DELETED
   - New URLs: TCG category (`_dcat=183454`), English-only, UK/DE local, sold only, sort by newest
+- [x] **M6.5-T2** — Skip listings without a recognizable card_id (filter at parse time so bundles/DON cards never reach bronze, SQLite, or silver/quarantine)
 
 ### Milestone 7: Silver Layer — Lakehouse Processing (M7)
-> **M7-T1 COMPLETE:** LakeSail (pysail) integrated as local Spark-alternative via Spark Connect. PyArrow `from_pandas()` for DataFrame→Parquet conversion. P card normalization added (`P\d+` pattern, `P-XXX` format). PySpark 4.1+ via Spark Connect (`sc://localhost:{port}`). PyArrow fs for MinIO read/write (no Hadoop jars).
+> **M7 COMPLETE:** LakeSail (pysail) integrated as local Spark-alternative via Spark Connect. PyArrow `from_pandas()` for DataFrame→Parquet conversion. P card normalization added (`P\d+` pattern, `P-XXX` format). PySpark 4.1+ via Spark Connect (`sc://localhost:{port}`). PyArrow fs for MinIO read/write (no Hadoop jars). Per-item-id silver parquet layout (one file per `event_id`, collision check via `(sold_date, event_id, title)`).
 
 - [x] **M7-T1** — Evaluate and integrate LakeSail as Spark replacement for local lakehouse processing
 - [x] **M7-T2** — Wire silver DE/UK/EU pipelines (valid card_ids → `tcg-silver/data/{region}/{event_id}.parquet`, invalid → `tcg-silver/quarantine/{region}/{event_id}.parquet`; `event_id` = eBay item_id, one file per item, collision check via `(sold_date, event_id, title)` tuple; see `log/M7-T2-update.md` for the per-item-id refactor)
 - [x] **M7-T3** — Define silver layer transformations (card_id normalization, `title` field capture, quarantine logic)
-- [ ] **M7-T4** — Create `log/M7-T1.md` through `log/M7-T3.md` (pending)
+- [x] **M7-T4** — Logs filed: `log/M7-T1.md` (LakeSail + initial transform), `log/M7-T2-update.md` (per-item-id refactor + collision check + live-data fixes), `log/M7-T3.md` (consolidated transformation definition). Note: `log/2026-06-02-M7-T2.md` is mislabeled — its content is the EU Pipeline Orchestrator, not M7-T2 silver wiring.
 
 ---
 
