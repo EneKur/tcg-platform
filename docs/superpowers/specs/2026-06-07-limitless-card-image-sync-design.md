@@ -267,15 +267,29 @@ existing `pytest tests/scraping/` setup.
 **New:**
 - `src/tcg_platform/defs/discover_limitless_catalog.py`
 - `src/tcg_platform/defs/sync_card_images.py`
-- `tests/scraping/test_discover_limitless_catalog.py`
-- `tests/scraping/test_sync_card_images.py`
+- `src/tcg_platform/scraping/limitless_sync.py` (pure helpers: `build_cdn_url`,
+  `build_minio_key`, `build_card_image_diff`)
+- `tests/scraping/test_extract_card_links_from_set_page.py`
+- `tests/scraping/test_sync_card_diff.py`
 
 **Modified:**
 - `src/tcg_platform/definitions.py` — add `sync_card_images_job` and include
   in the `jobs=[...]` list.
 - `src/tcg_platform/scraping/limitlesstcg.py` — extract
   `extract_card_links_from_set_page`; refactor `scrape_limitless_op` to call
-  it; add `P` to the prefix set (currently missing).
+  it; add `P` to the prefix set (currently missing); add `if variant is not
+  None: continue` filter so variant pages are not re-visited by the legacy
+  scrape path (variants are handled by the new sync job).
+
+**Note on test coverage:** This spec originally listed asset-level test
+files (`test_discover_limitless_catalog.py`, `test_sync_card_images.py`)
+covering CDN 404, put_object failure, `list_objects` call count, and
+`MaterializeResult` shape. The implementation plan de-scoped these in
+favor of testing the pure helpers in `limitless_sync.py` and
+`limitlesstcg.py` (where all non-trivial logic lives). The assets
+themselves are thin orchestration and were verified by loading cleanly
+into Dagster's `Definitions` and resolving `sync_card_images_job`
+correctly. Asset-level tests can be added in a follow-up if desired.
 
 ## Verification (end of task)
 
