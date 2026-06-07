@@ -71,6 +71,12 @@ complete_eu_pipeline = define_asset_job(
     description="Full EU pipeline: bronze → backfill (DE+UK parallel) → silver",
 )
 
+sync_card_images_job = define_asset_job(
+    name="sync_card_images_job",
+    selection=["discover_limitless_catalog", "sync_card_images"],
+    description="Diff Limitless catalog against tcg-bronze/cards/, download missing images.",
+)
+
 
 @definitions
 def defs():
@@ -88,6 +94,7 @@ def defs():
             silver_uk_job,
             silver_eu_job,
             complete_eu_pipeline,
+            sync_card_images_job,
         ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
