@@ -131,6 +131,38 @@ def _get_all_sets() -> list[tuple[str, str]]:
         return sets
 
 
+def extract_card_links_from_set_page(html: str) -> list[tuple[str, int | None]]:
+    """Parse a Limitless set page; return [(card_id, variant), ...] deduped.
+
+    card_id is uppercased. variant is None for base cards, int for ?v=N printings.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    set_prefixes = ("OP", "EB", "ST", "PR", "P")
+    raw = [
+        a.get("href")
+        for a in soup.find_all("a")
+        if any(f"/CARDS/{p}" in (a.get("href") or "").upper() for p in set_prefixes)
+    ]
+    out: list[tuple[str, int | None]] = []
+    seen: set[tuple[str, int | None]] = set()
+    for href in raw:
+        path, _, query = href.partition("?")
+        card_id = path.rsplit("/", 1)[-1].upper()
+        variant: int | None = None
+        if query:
+            for part in query.split("&"):
+                if part.startswith("v="):
+                    try:
+                        variant = int(part[2:])
+                    except ValueError:
+                        variant = None
+        key = (card_id, variant)
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
 def scrape_limitless_op() -> tuple[list[CardRecord], list[PriceRecord]]:
     all_cards = []
     all_prices = []
@@ -149,13 +181,11 @@ def scrape_limitless_op() -> tuple[list[CardRecord], list[PriceRecord]]:
             page.wait_for_load_state("networkidle", timeout=30000)
 
             html = page.content()
-            soup = BeautifulSoup(html, "html.parser")
 
-            card_links = [a.get("href") for a in soup.find_all("a") if "/cards/OP" in a.get("href", "") or "/cards/EB" in a.get("href", "") or "/cards/PR" in a.get("href", "") or "/cards/ST" in a.get("href", "")]
-            card_links = list(set(card_links))
+            card_links = extract_card_links_from_set_page(html)
 
-            for card_link in card_links:
-                card_url = f"{LIMITLESS_OP_BASE}{card_link}"
+            for card_id, variant in card_links:
+                card_url = f"{LIMITLESS_OP_BASE}/cards/{card_id.lower()}"
                 try:
                     card_page = browser.new_page()
                     card_page.goto(card_url, timeout=60000)
@@ -170,7 +200,7 @@ def scrape_limitless_op() -> tuple[list[CardRecord], list[PriceRecord]]:
 
                     card_page.close()
                 except Exception as e:
-                    print(f"Error scraping {card_link}: {e}")
+                    print(f"Error scraping {card_id}: {e}")
                     continue
 
             page.close()
