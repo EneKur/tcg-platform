@@ -137,6 +137,7 @@ def extract_card_links_from_set_page(html: str) -> list[tuple[str, int | None]]:
     card_id is uppercased. variant is None for base cards, int for ?v=N printings.
     """
     soup = BeautifulSoup(html, "html.parser")
+    # "P" must be last; it's a 1-char prefix that would shadow any future "P*"-starting set codes.
     set_prefixes = ("OP", "EB", "ST", "PR", "P")
     raw = [
         a.get("href")
@@ -184,7 +185,12 @@ def scrape_limitless_op() -> tuple[list[CardRecord], list[PriceRecord]]:
 
             card_links = extract_card_links_from_set_page(html)
 
+            # extract_card_links_from_set_page returns base + variant tuples.
+            # scrape_limitless_op only needs base cards — variant pages are
+            # covered by the separate sync_card_images asset.
             for card_id, variant in card_links:
+                if variant is not None:
+                    continue
                 card_url = f"{LIMITLESS_OP_BASE}/cards/{card_id.lower()}"
                 try:
                     card_page = browser.new_page()
