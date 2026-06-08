@@ -70,3 +70,28 @@ def test_card_id_uppercased():
     html = '<html><body><a href="/cards/op01-001">x</a></body></html>'
     result = extract_card_links_from_set_page(html)
     assert result == [("OP01-001", None)]
+
+
+def test_filters_set_name_alias_links():
+    """Set pages contain links like /cards/OP16-THE-TIME-OF-BATTLE that are
+    set-name slugs (page aliases for the set itself, not real cards). They
+    match the prefix regex but have no CDN image and should be filtered out.
+    Without this filter the sync job emits (OP16, OP16-THE-TIME-OF-BATTLE, None)
+    and the CDN returns 403, polluting failed_card_ids."""
+    html = """<html><body>
+      <a href="/cards/op16-the-time-of-battle">OP16 set alias</a>
+      <a href="/cards/st30-ex-luffy-ace">ST30 set alias</a>
+      <a href="/cards/op01-001">real card</a>
+    </body></html>"""
+    result = extract_card_links_from_set_page(html)
+    card_ids = [c for (c, _) in result]
+    assert "OP16-THE-TIME-OF-BATTLE" not in card_ids
+    assert "ST30-EX-LUFFY-ACE" not in card_ids
+    assert "OP01-001" in card_ids
+
+
+def test_keeps_short_named_promos():
+    """Promo cards with short alphanumeric suffixes (P-105, etc.) must be kept."""
+    html = '<html><body><a href="/cards/p-105">P-105</a></body></html>'
+    result = extract_card_links_from_set_page(html)
+    assert result == [("P-105", None)]

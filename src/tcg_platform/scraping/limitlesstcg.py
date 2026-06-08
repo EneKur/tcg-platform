@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from tcg_platform.scraping.models import CardRecord, PriceRecord
+from tcg_platform.scraping.limitless_sync import is_real_card_id
 
 
 LIMITLESS_OP_BASE = "https://onepiece.limitlesstcg.com"
@@ -149,6 +150,8 @@ def extract_card_links_from_set_page(html: str) -> list[tuple[str, int | None]]:
     for href in raw:
         path, _, query = href.partition("?")
         card_id = path.rsplit("/", 1)[-1].upper()
+        if not is_real_card_id(card_id):
+            continue
         variant: int | None = None
         if query:
             for part in query.split("&"):
