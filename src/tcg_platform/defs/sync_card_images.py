@@ -16,7 +16,7 @@ from tcg_platform.scraping.limitless_sync import (
 )
 def sync_card_images(
     context: dg.AssetExecutionContext,
-    discover_limitless_catalog: list[tuple[str, str, int | None]],
+    discover_limitless_catalog: list[tuple[str, int | None]],
 ) -> dg.MaterializeResult:
     """Diff the discovered Limitless catalog against tcg-bronze/cards/, download missing."""
     minio_client: MinioClientResource = context.resources.minio_client
@@ -32,8 +32,8 @@ def sync_card_images(
     new_card_ids: list[str] = []
     failed_card_ids: list[str] = []
 
-    for set_code, card_id, variant, key in diff:
-        url = build_cdn_url(set_code, card_id, variant)
+    for card_id, variant, key in diff:
+        url = build_cdn_url(card_id, variant)
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()

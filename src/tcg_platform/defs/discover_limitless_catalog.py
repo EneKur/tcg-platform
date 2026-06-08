@@ -11,15 +11,23 @@ from playwright.sync_api import sync_playwright
 @dg.asset
 def discover_limitless_catalog(
     context: dg.AssetExecutionContext,
-) -> list[tuple[str, str, int | None]]:
-    """Scrape Limitless TCG and return a list of (set_code, card_id, variant).
+) -> list[tuple[str, int | None]]:
+    """Scrape Limitless TCG and return a list of (card_id, variant).
 
     Discovers all sets dynamically from /cards/ (not hardcoded). For each set,
-    scrapes the set page and extracts base cards + ?v=N variant links. Output
-    is a flat list of tuples; no MinIO writes.
+    scrapes the set page and extracts base cards + ?v=N variant links. The
+    set_code is NOT included in the tuple — the home set is encoded in the
+    card_id prefix (e.g. OP05-001 -> OP05), and the sync helpers derive the
+    set_code from the card_id. Including a separate set_code caused
+    cross-set reprints (e.g. ST15-005_p4 listed on the OP16 set page) to be
+    fetched from the wrong CDN path and 403.
+
+    Phantom card_ids (e.g. OP16-THE-TIME-OF-BATTLE, set-name slugs that
+    Limitless uses as set-page aliases) are filtered out at the
+    extract_card_links_from_set_page layer.
     """
-    catalog: list[tuple[str, str, int | None]] = []
-    seen: set[tuple[str, str, int | None]] = set()
+    catalog: list[tuple[str, int | None]] = []
+    seen: set[tuple[str, int | None]] = set()
 
     sets = _get_all_sets()
     context.log.info(f"Discovered {len(sets)} sets on Limitless")
@@ -39,7 +47,7 @@ def discover_limitless_catalog(
                 continue
 
             for card_id, variant in extract_card_links_from_set_page(html):
-                key = (set_code, card_id, variant)
+                key = (card_id, variant)
                 if key not in seen:
                     seen.add(key)
                     catalog.append(key)
@@ -53,5 +61,5 @@ def discover_limitless_catalog(
             "src/tcg_platform/scraping/limitlesstcg.py"
         )
 
-    context.log.info(f"Discovery complete: {len(catalog)} (set, card, variant) tuples across {len(sets)} sets")
+    context.log.info(f"Discovery complete: {len(catalog)} (card, variant) tuples across {len(sets)} sets")
     return catalog
