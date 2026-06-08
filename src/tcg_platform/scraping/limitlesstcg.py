@@ -132,6 +132,45 @@ def _get_all_sets() -> list[tuple[str, str]]:
         return sets
 
 
+# Sub-pages of /cards/promos that are NOT real card_ids and NOT the index
+# itself. The full set is enumerated at runtime; these are just the
+# always-present footers that extract_promo_subpages filters out.
+_PROMO_INDEX_EXCLUDE = frozenset({
+    "promos",  # self-link
+    "op16-the-time-of-battle",  # OP16 set-name alias
+    "st30-ex-luffy-ace",  # ST30 set-name alias
+})
+
+
+def extract_promo_subpages(html: str) -> list[str]:
+    """Parse the /cards/promos index and return promo sub-page slugs.
+
+    The index lists ~77 sub-pages (tournament packs, event packs, regional
+    packs, championship packs, dash packs, gift collections, misc promos,
+    etc.). Each sub-page contains a list of cards that may come from
+    multiple sets mixed together (e.g. OP05, P, OP14 all on one page) with
+    ?v=N printings. The sub-page list is enumerated here, then the discover
+    asset walks each sub-page with extract_card_links_from_set_page.
+
+    Sub-page slugs are lowercased (matching Limitless's URL convention).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in soup.find_all("a"):
+        href = a.get("href") or ""
+        if not href.startswith("/cards/"):
+            continue
+        slug = href[len("/cards/"):].split("?")[0]
+        if not slug or slug in _PROMO_INDEX_EXCLUDE:
+            continue
+        if slug in seen:
+            continue
+        seen.add(slug)
+        out.append(slug)
+    return out
+
+
 def extract_card_links_from_set_page(html: str) -> list[tuple[str, int | None]]:
     """Parse a Limitless set page; return [(card_id, variant), ...] deduped.
 
