@@ -140,3 +140,42 @@ def test_promotes_only_valid_in_mixed_batch():
     assert "quarantine/de/222222222222.parquet" in quarantine_files
     assert "quarantine/de/444444444444.parquet" in quarantine_files
     assert "quarantine/de/555555555555.parquet" in quarantine_files
+
+
+def test_deletes_empty_quarantine_file():
+    cards_files = ["cards/OP01/OP01-001.webp"]
+    # Build a parquet with the right schema but zero rows
+    schema = pa.schema([
+        ("event_id", pa.string()),
+        ("card_id", pa.string()),
+        ("card_version", pa.string()),
+        ("event_type", pa.string()),
+        ("price", pa.float64()),
+        ("currency", pa.string()),
+        ("sold_date", pa.string()),
+        ("scraped_from", pa.string()),
+        ("source", pa.string()),
+        ("source_url", pa.string()),
+        ("language", pa.string()),
+        ("scraped_at", pa.string()),
+        ("image_url", pa.string()),
+        ("title", pa.string()),
+    ])
+    empty_table = pa.Table.from_pydict({field.name: [] for field in schema}, schema=schema)
+    buf = io.BytesIO()
+    pq.write_table(empty_table, buf)
+    empty_bytes = buf.getvalue()
+
+    quarantine_files = {
+        "quarantine/de/666666666666.parquet": empty_bytes,
+    }
+    minio = _make_minio_with_files(cards_files, quarantine_files)
+
+    result = _reconcile_region(minio, "de")
+
+    assert result["scanned"] == 1
+    assert result["promoted_count"] == 0
+    assert result["still_quarantined_count"] == 0
+    assert result["read_errors"] == 0
+    # Empty file should be deleted
+    assert "quarantine/de/666666666666.parquet" not in quarantine_files
