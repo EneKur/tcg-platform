@@ -107,6 +107,7 @@ def _reconcile_region(minio_client: MinioClientResource, region: str) -> dict:
     promoted: list[dict] = []
     still_quarantined = 0
     read_errors = 0
+    to_delete: list[str] = []
 
     for path in quarantined_paths:
         try:
@@ -119,16 +120,22 @@ def _reconcile_region(minio_client: MinioClientResource, region: str) -> dict:
 
         if table.num_rows == 0:
             # Empty file — cleanup, no re-validation needed.
-            minio_client.remove_object(SILVER_BUCKET, path)
+            to_delete.append(path)
             continue
 
         card_id = table.column("card_id").to_pylist()[0]
         if is_valid_card_id(card_id, valid_card_ids):
-            minio_client.remove_object(SILVER_BUCKET, path)
+            to_delete.append(path)
             promoted.append({"path": path, "card_id": card_id})
             _LOG.info(f"Reconcile: promoted {card_id} ({path})")
         else:
             still_quarantined += 1
+
+    if to_delete:
+        from minio.deleteobjects import DeleteObject
+        minio_client.remove_objects(
+            SILVER_BUCKET, [DeleteObject(name=p) for p in to_delete]
+        )
 
     return {
         "scanned": len(quarantined_paths),
