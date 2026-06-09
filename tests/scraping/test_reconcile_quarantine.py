@@ -215,3 +215,23 @@ def test_handles_zero_quarantined_files():
         "promoted": [],
     }
     assert minio._deleted == []
+
+
+def test_handles_card_id_with_collision_suffix():
+    """Quarantine file at quarantine/de/{event_id}_1.parquet (collision suffix
+    from the writer) should still be processed correctly. The algorithm only
+    reads the card_id column; the filename suffix is irrelevant."""
+    cards_files = ["cards/OP11/OP11-001.webp"]
+    quarantine_files = {
+        # _1 suffix means: the same event_id was quarantined with a
+        # different (sold_date, event_id, title) tuple already
+        "quarantine/de/123456789012_1.parquet": _row_to_parquet_bytes("OP11-001"),
+    }
+    minio = _make_minio_with_files(cards_files, quarantine_files)
+
+    result = _reconcile_region(minio, "de")
+
+    assert result["scanned"] == 1
+    assert result["promoted_count"] == 1
+    assert result["promoted"][0]["path"] == "quarantine/de/123456789012_1.parquet"
+    assert "quarantine/de/123456789012_1.parquet" not in quarantine_files
