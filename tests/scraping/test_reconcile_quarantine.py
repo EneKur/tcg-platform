@@ -235,3 +235,32 @@ def test_handles_card_id_with_collision_suffix():
     assert result["promoted_count"] == 1
     assert result["promoted"][0]["path"] == "quarantine/de/123456789012_1.parquet"
     assert "quarantine/de/123456789012_1.parquet" not in quarantine_files
+
+
+def test_uses_cardset_at_run_time_not_at_quarantine_time():
+    """Pin the central property: reconciler re-validates against the cards
+    folder AS IT IS NOW, not against any snapshot from when the row was
+    originally quarantined. We simulate this by running the reconciler twice
+    against the same quarantine file: once before OP17-099 is in the cards
+    folder (row stays quarantined), once after (row gets promoted)."""
+    quarantine_files = {
+        "quarantine/de/101010101010.parquet": _row_to_parquet_bytes("OP17-099"),
+    }
+
+    # Pass 1: OP17-099 not yet in cards folder
+    cards_files_pass1: list[str] = []
+    minio1 = _make_minio_with_files(cards_files_pass1, quarantine_files)
+    result1 = _reconcile_region(minio1, "de")
+    assert result1["promoted_count"] == 0
+    assert result1["still_quarantined_count"] == 1
+    assert "quarantine/de/101010101010.parquet" in quarantine_files
+
+    # Pass 2: OP17-099 has been added to the cards folder (e.g. a later
+    # sync_card_images_job run). The same quarantine file should now
+    # be promoted.
+    cards_files_pass2 = ["cards/OP17/OP17-099.webp"]
+    minio2 = _make_minio_with_files(cards_files_pass2, quarantine_files)
+    result2 = _reconcile_region(minio2, "de")
+    assert result2["promoted_count"] == 1
+    assert result2["still_quarantined_count"] == 0
+    assert "quarantine/de/101010101010.parquet" not in quarantine_files
