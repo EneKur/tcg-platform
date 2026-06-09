@@ -26,6 +26,10 @@ from tcg_platform.defs.eu_pipeline_orchestrator import (
     backfill_uk_asset,
     silver_eu_orchestrator,
 )
+from tcg_platform.defs.reconcile_quarantine import (
+    reconcile_quarantine_de_job,
+    reconcile_quarantine_uk_job,
+)
 
 
 ebay_de_job = define_asset_job(
@@ -95,6 +99,8 @@ def defs():
             silver_eu_job,
             complete_eu_pipeline,
             sync_card_images_job,
+            reconcile_quarantine_de_job,
+            reconcile_quarantine_uk_job,
         ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
