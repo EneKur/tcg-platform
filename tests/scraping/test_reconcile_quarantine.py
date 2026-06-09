@@ -87,3 +87,23 @@ def test_promotes_row_whose_card_id_now_passes():
     assert "quarantine/de/999999999999.parquet" not in quarantine_files
     # And remove_objects must have been called for it
     assert minio._deleted == [["quarantine/de/999999999999.parquet"]]
+
+
+def test_leaves_row_alone_when_card_id_still_invalid():
+    cards_files = ["cards/OP16/OP16-005.webp"]  # OP16-005 exists, MALFORMED does not
+    quarantine_files = {
+        "quarantine/de/888888888888.parquet": _row_to_parquet_bytes("MALFORMED"),
+    }
+    minio = _make_minio_with_files(cards_files, quarantine_files)
+
+    result = _reconcile_region(minio, "de")
+
+    assert result["scanned"] == 1
+    assert result["promoted_count"] == 0
+    assert result["still_quarantined_count"] == 1
+    assert result["read_errors"] == 0
+    assert result["promoted"] == []
+    # File must remain in quarantine
+    assert "quarantine/de/888888888888.parquet" in quarantine_files
+    # remove_objects must NOT have been called
+    assert minio._deleted == []
