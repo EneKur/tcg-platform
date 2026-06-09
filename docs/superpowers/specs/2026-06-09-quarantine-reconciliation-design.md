@@ -357,14 +357,34 @@ The reconciler is additive.
 
 ## Files modified
 
-- **New:** `src/tcg_platform/defs/reconcile_quarantine.py`
+- **New:** `src/tcg_platform/defs/reconcile_quarantine.py` —
+  defines the 2 assets and 2 jobs. Assets are auto-discovered by
+  `load_from_defs_folder` in `definitions.py:83` (no asset
+  registration needed). The 2 new jobs must be added to the
+  `jobs=[...]` list in `definitions.py:87-98`.
 - **New:** `tests/scraping/test_reconcile_quarantine.py`
+- **Modified:** `src/tcg_platform/definitions.py` — add 2 imports
+  for the new jobs and 2 entries in the `jobs=[...]` list.
 - **Modified:** `src/tcg_platform/defs/eu_pipeline_orchestrator.py`
-  (add 2 job calls + 2 metadata fields to
-  `silver_eu_orchestrator`)
-- **Modified:** `src/tcg_platform/definitions.py` (or wherever the
-  new module is wired in) — register the 2 new assets and 2 new jobs
-  if not auto-discovered.
+  — add 2 job calls at the top of `silver_eu_orchestrator`'s body
+  and 2 new fields in its returned `MaterializeResult` metadata.
+
+### Asset/job discovery notes
+
+`definitions.py:81-83` uses `@definitions` + `load_from_defs_folder`
+to auto-discover all `@dg.asset` and `@dg.sensor` definitions in
+`defs/`. So the 2 new assets will appear in the Dagster UI
+automatically once the new module is on disk.
+
+`@dg.define_asset_job` results are **not** auto-discovered — they
+must be imported and added to the explicit `jobs=[...]` list in
+`definitions.py:87-98`. The orchestrator's `silver_eu_orchestrator`
+looks up jobs by name via `resolved.resolve_job_def(name)`, so the
+exact string in `define_asset_job(name=...)` must match what the
+orchestrator passes to `resolve_job_def(...)`.
+- **Modified:** `src/tcg_platform/defs/eu_pipeline_orchestrator.py`
+  — add 2 job calls at the top of `silver_eu_orchestrator`'s body
+  and 2 new fields in its returned `MaterializeResult` metadata.
 
 ## Risk
 
