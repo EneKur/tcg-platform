@@ -107,3 +107,36 @@ def test_leaves_row_alone_when_card_id_still_invalid():
     assert "quarantine/de/888888888888.parquet" in quarantine_files
     # remove_objects must NOT have been called
     assert minio._deleted == []
+
+
+def test_promotes_only_valid_in_mixed_batch():
+    cards_files = [
+        "cards/OP01/OP01-001.webp",
+        "cards/OP01/OP01-002.webp",
+    ]
+    quarantine_files = {
+        "quarantine/de/111111111111.parquet": _row_to_parquet_bytes("OP01-001"),
+        "quarantine/de/222222222222.parquet": _row_to_parquet_bytes("BUNDLE_OF_CARDS"),
+        "quarantine/de/333333333333.parquet": _row_to_parquet_bytes("OP01-002"),
+        "quarantine/de/444444444444.parquet": _row_to_parquet_bytes("MALFORMED_TITLE"),
+        "quarantine/de/555555555555.parquet": _row_to_parquet_bytes("OP17-099"),
+    }
+    minio = _make_minio_with_files(cards_files, quarantine_files)
+
+    result = _reconcile_region(minio, "de")
+
+    assert result["scanned"] == 5
+    assert result["promoted_count"] == 2
+    assert result["still_quarantined_count"] == 3
+    assert result["read_errors"] == 0
+    promoted_paths = {p["path"] for p in result["promoted"]}
+    assert promoted_paths == {
+        "quarantine/de/111111111111.parquet",
+        "quarantine/de/333333333333.parquet",
+    }
+    # The 2 valid ones are gone, the 3 invalid ones remain
+    assert "quarantine/de/111111111111.parquet" not in quarantine_files
+    assert "quarantine/de/333333333333.parquet" not in quarantine_files
+    assert "quarantine/de/222222222222.parquet" in quarantine_files
+    assert "quarantine/de/444444444444.parquet" in quarantine_files
+    assert "quarantine/de/555555555555.parquet" in quarantine_files
