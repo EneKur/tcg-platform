@@ -198,3 +198,20 @@ def test_read_error_leaves_file_untouched():
     assert "quarantine/de/777777777777.parquet" in quarantine_files
     # remove_objects must NOT have been called
     assert minio._deleted == []
+
+
+def test_handles_zero_quarantined_files():
+    cards_files = ["cards/OP01/OP01-001.webp"]
+    quarantine_files: dict = {}
+    minio = _make_minio_with_files(cards_files, quarantine_files)
+
+    result = _reconcile_region(minio, "de")
+
+    assert result == {
+        "scanned": 0,
+        "promoted_count": 0,
+        "still_quarantined_count": 0,
+        "read_errors": 0,
+        "promoted": [],
+    }
+    assert minio._deleted == []
