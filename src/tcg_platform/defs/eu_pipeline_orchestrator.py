@@ -49,24 +49,46 @@ def backfill_uk_asset(context: dg.AssetExecutionContext):
 
 @dg.asset(deps=[AssetKey("backfill_de_asset"), AssetKey("backfill_uk_asset")])
 def silver_eu_orchestrator(context: dg.AssetExecutionContext):
-    """Run silver DE then UK transforms sequentially. Waits for both backfills to succeed."""
+    """Run reconcile_quarantine → silver for DE and UK sequentially.
+
+    The reconciler runs FIRST so that any quarantined rows whose card_id
+    is now in the cards folder get their quarantine parquets deleted. The
+    subsequent silver runs then re-evaluate the corresponding bronze rows
+    and write them to tcg-silver/data/.
+
+    Waits for both backfills to succeed.
+    """
     from tcg_platform.definitions import defs
     context.log.info("Starting silver_eu_orchestrator")
 
-    # Run DE first
     resolved = defs.load_fn()
+
+    # Reconcile DE quarantine first
+    job_def_reconcile_de = resolved.resolve_job_def("reconcile_quarantine_de_job")
+    context.log.info("Running reconcile_quarantine_de_job...")
+    result_reconcile_de = job_def_reconcile_de.execute_in_process(instance=context.instance)
+    context.log.info(f"reconcile_de complete, run_id={result_reconcile_de.run_id}")
+
+    # Then UK
+    job_def_reconcile_uk = resolved.resolve_job_def("reconcile_quarantine_uk_job")
+    context.log.info("Running reconcile_quarantine_uk_job...")
+    result_reconcile_uk = job_def_reconcile_uk.execute_in_process(instance=context.instance)
+    context.log.info(f"reconcile_uk complete, run_id={result_reconcile_uk.run_id}")
+
+    # Existing silver runs (DE then UK)
     job_def_de = resolved.resolve_job_def("silver_de_pipeline")
     context.log.info("Running silver_de_pipeline...")
     result_de = job_def_de.execute_in_process(instance=context.instance)
     context.log.info(f"silver_de complete, run_id={result_de.run_id}")
 
-    # Then UK
     job_def_uk = resolved.resolve_job_def("silver_uk_pipeline")
     context.log.info("Running silver_uk_pipeline...")
     result_uk = job_def_uk.execute_in_process(instance=context.instance)
     context.log.info(f"silver_uk complete, run_id={result_uk.run_id}")
 
     return dg.MaterializeResult(metadata={
+        "reconcile_de_run_id": result_reconcile_de.run_id,
+        "reconcile_uk_run_id": result_reconcile_uk.run_id,
         "de_run_id": result_de.run_id,
         "uk_run_id": result_uk.run_id,
     })
