@@ -71,3 +71,68 @@ def _reconcile_region(minio_client: MinioClientResource, region: str) -> dict:
         "read_errors": read_errors,
         "promoted": promoted,
     }
+
+
+@dg.asset(required_resource_keys={"minio_client"})
+def reconcile_quarantine_de(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
+    """Re-validate tcg-silver/quarantine/de/ rows against the current
+    tcg-bronze/cards/ set. Deletes files whose card_id is now valid; the
+    next silver_de_pipeline run will re-evaluate the corresponding bronze
+    rows and write them to tcg-silver/data/de/."""
+    minio_client: MinioClientResource = context.resources.minio_client
+    result = _reconcile_region(minio_client, "de")
+    context.log.info(
+        f"DE reconcile: scanned={result['scanned']} "
+        f"promoted={result['promoted_count']} "
+        f"still_quarantined={result['still_quarantined_count']} "
+        f"read_errors={result['read_errors']}"
+    )
+    return dg.MaterializeResult(
+        metadata={
+            "scanned": result["scanned"],
+            "promoted_count": result["promoted_count"],
+            "still_quarantined_count": result["still_quarantined_count"],
+            "read_errors": result["read_errors"],
+            "promoted_card_ids": dg.MetadataValue.json(
+                [p["card_id"] for p in result["promoted"]]
+            ),
+        }
+    )
+
+
+@dg.asset(required_resource_keys={"minio_client"})
+def reconcile_quarantine_uk(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
+    """Re-validate tcg-silver/quarantine/uk/ rows against the current
+    tcg-bronze/cards/ set. See reconcile_quarantine_de for details."""
+    minio_client: MinioClientResource = context.resources.minio_client
+    result = _reconcile_region(minio_client, "uk")
+    context.log.info(
+        f"UK reconcile: scanned={result['scanned']} "
+        f"promoted={result['promoted_count']} "
+        f"still_quarantined={result['still_quarantined_count']} "
+        f"read_errors={result['read_errors']}"
+    )
+    return dg.MaterializeResult(
+        metadata={
+            "scanned": result["scanned"],
+            "promoted_count": result["promoted_count"],
+            "still_quarantined_count": result["still_quarantined_count"],
+            "read_errors": result["read_errors"],
+            "promoted_card_ids": dg.MetadataValue.json(
+                [p["card_id"] for p in result["promoted"]]
+            ),
+        }
+    )
+
+
+reconcile_quarantine_de_job = dg.define_asset_job(
+    name="reconcile_quarantine_de_job",
+    selection=["reconcile_quarantine_de"],
+    description="Re-validate DE quarantined silver rows against the current card set.",
+)
+
+reconcile_quarantine_uk_job = dg.define_asset_job(
+    name="reconcile_quarantine_uk_job",
+    selection=["reconcile_quarantine_uk"],
+    description="Re-validate UK quarantined silver rows against the current card set.",
+)
