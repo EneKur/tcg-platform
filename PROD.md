@@ -125,6 +125,21 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 - [x] **M7-T3** — Define silver layer transformations (card_id normalization, `title` field capture, quarantine logic)
 - [x] **M7-T4** — Logs filed: `log/M7-T1.md` (LakeSail + initial transform), `log/M7-T2-update.md` (per-item-id refactor + collision check + live-data fixes), `log/M7-T3.md` (consolidated transformation definition). Note: `log/2026-06-02-M7-T2.md` is mislabeled — its content is the EU Pipeline Orchestrator, not M7-T2 silver wiring.
 
+### Milestone 8: Limitless Card Image Sync + Quarantine Reconciliation (M8)
+> **M8 COMPLETE:** Keeps `tcg-bronze/cards/` in sync with the Limitless TCG catalog (monthly manual run from the Dagster UI) and gives silver/quarantine rows a path to be promoted once their `card_id` becomes known. Quarantine reconciliation runs automatically as the first step of `complete_eu_pipeline`.
+
+- [x] **M8-T1** — `sync_card_images_job` (Dagster job; `sync_card_images_discover` + `sync_card_images_download` assets). Derives each card's *home* set from its `card_id` (not the scraped set) and filters set-name alias slugs (`op16-the-time-of-battle`, `st30-ex-luffy-ace`) that would otherwise yield CDN 403s. Variants written as `cards/{set}/{card_id}__v{N}.webp`; base cards as `cards/{set}/{card_id}.webp`. Spec: `docs/superpowers/specs/2026-06-07-limitless-card-image-sync-design.md`.
+- [x] **M8-T2** — Promo sub-pages walk. Extended `discover_limitless_catalog` to walk `/cards/promos` (~77 sub-pages: tournament packs, event packs, regional packs, championship packs, dash packs, gift collections, misc). Mixed-set cards that don't appear on standard set pages now get picked up. New pure helper `extract_promo_subpages(html)`.
+- [x] **M8-T3** — Silver quarantine reconciliation. `reconcile_quarantine_de/uk` assets + jobs, wired into `silver_eu_orchestrator` before the silver calls. For each parquet in `tcg-silver/quarantine/{region}/`, re-validates the `card_id` against the **current** `tcg-bronze/cards/` set (loaded fresh on every call); if valid, batch-deletes the quarantine file via `MinioClientResource.remove_objects()`. The next silver run re-reads the immutable bronze parquet and lands the promoted row in `tcg-silver/data/{region}/{event_id}.parquet` via the writer's normal collision-check path. No SQLite writes, no bronze mutations — the `parqueted` column is a "bronze parquet exists" signal, not a "row is in silver" signal. Spec: `docs/superpowers/specs/2026-06-09-quarantine-reconciliation-design.md`.
+- [x] **M8-T4** — Logs filed: `log/SESSION_2026-06-07.md` (M8-T1), `log/SESSION_2026-06-08.md` (M8-T1 CDN 403 fix), `log/SESSION_2026-06-08-m8-t2.md` (M8-T2 promo walk), `log/SESSION_2026-06-09.md` (M8-T3 quarantine reconciliation, PR #15 merged).
+
+### Outstanding (post-M8)
+- **M8-T5 — Cardlist parquet writer for Limitless** — `bronze_cardlist_parquet` and `bronze_fact_events_parquet` assets were deferred from M3-T2 (data needed cleaning/structuring first; M7's `silver_*_transform` did the cleaning but the writer was never built). Outstanding since 2026-05-28.
+- **M8-T6 — Silver `is_valid_card_id` path bug** — flagged in 2026-06-07 session log; not yet root-caused. Outstanding.
+- **M8-T7 — DE/UK factory refactor** — `reconcile_quarantine.py` (added in M8-T3) duplicates DE/UK across `_reconcile_region`, `reconcile_quarantine_de`, `reconcile_quarantine_uk`, mirroring the same duplication in `silver_transform.py` for `silver_de_transform` / `silver_uk_transform`. Candidate for a single factory-pattern refactor that converts all three pairs at once. Per M8-T3 spec: "do it as a single follow-up PR, don't fork patterns."
+- **14 `failed_card_ids` from `sync_card_images`** — CDN gaps on the Limitless side; no fix in this codebase. Outstanding.
+- **M5-T2 deferred work** — Dagster schedules (daily full refresh + hourly incremental) never implemented. Still deferred.
+
 ---
 
 ## Auth Folder Structure
