@@ -445,105 +445,65 @@ def _run_silver_transform(spark, minio_client, region: str) -> dict:
     return {"valid": valid_count, "quarantine": quarantine_count, "sample": sample_rows}
 
 
-@dg.asset(required_resource_keys={"minio_client"})
-def silver_de_transform(
-    context: dg.AssetExecutionContext,
-) -> dg.MaterializeResult:
-    """Transform DE bronze parquets into silver layer.
+def make_silver_asset(region: str) -> dg.AssetsDefinition:
+    """Build a silver transform asset for a given region ('de' or 'uk')."""
+    upper = region.upper()
+    lower = region.lower()
 
-    Valid card_ids (found in tcg-bronze/cards/) -> tcg-silver/data/de/
-    Invalid card_ids -> tcg-silver/quarantine/de/
-    """
-    minio_client = context.resources.minio_client
+    @dg.asset(name=f"silver_{lower}_transform",
+              required_resource_keys={"minio_client"})
+    def _asset(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
+        """Transform {region} bronze parquets into silver layer.
 
-    try:
-        active = SparkSession.getActiveSession()
-        if active:
-            active.stop()
-    except Exception:
-        pass
+        Valid card_ids (found in tcg-bronze/cards/) -> tcg-silver/data/{region}/
+        Invalid card_ids -> tcg-silver/quarantine/{region}/
+        """
+        minio_client = context.resources.minio_client
 
-    server = SparkConnectServer("127.0.0.1", 0)
-    server.start(background=True)
-    addr, port = server.listening_address
-    context.log.info(f"SparkConnectServer started at sc://localhost:{port}")
+        try:
+            active = SparkSession.getActiveSession()
+            if active:
+                active.stop()
+        except Exception:
+            pass
 
-    spark = None
-    try:
-        spark = SparkSession.builder.remote(f"sc://localhost:{port}").appName("silver_de_transform").getOrCreate()
-        context.log.info("Connected to Spark")
-        result = _run_silver_transform(spark, minio_client, "DE")
-        context.log.info(f"DE transform done: {result}")
-    finally:
-        if spark:
-            try:
-                spark.stop()
-            except Exception:
-                pass
-        server.stop()
+        server = SparkConnectServer("127.0.0.1", 0)
+        server.start(background=True)
+        addr, port = server.listening_address
+        context.log.info(f"SparkConnectServer started at sc://localhost:{port}")
 
-    sample_meta = {}
-    if result.get("sample"):
-        for i, row in enumerate(result["sample"][:3]):
-            for col, val in row.items():
-                sample_meta[f"sample_{i+1}.{col}"] = str(val) if val else ""
+        spark = None
+        try:
+            spark = (SparkSession.builder
+                     .remote(f"sc://localhost:{port}")
+                     .appName(f"silver_{lower}_transform")
+                     .getOrCreate())
+            context.log.info("Connected to Spark")
+            result = _run_silver_transform(spark, minio_client, upper)
+            context.log.info(f"{upper} transform done: {result}")
+        finally:
+            if spark:
+                try:
+                    spark.stop()
+                except Exception:
+                    pass
+            server.stop()
 
-    return dg.MaterializeResult(
-        metadata={
-            "valid_records": result["valid"],
-            "quarantined_records": result["quarantine"],
-            **sample_meta,
-        }
-    )
+        sample_meta = {}
+        if result.get("sample"):
+            for i, row in enumerate(result["sample"][:3]):
+                for col, val in row.items():
+                    sample_meta[f"sample_{i+1}.{col}"] = str(val) if val else ""
+
+        return dg.MaterializeResult(
+            metadata={
+                "valid_records": result["valid"],
+                "quarantined_records": result["quarantine"],
+                **sample_meta,
+            }
+        )
+    return _asset
 
 
-@dg.asset(required_resource_keys={"minio_client"})
-def silver_uk_transform(
-    context: dg.AssetExecutionContext,
-) -> dg.MaterializeResult:
-    """Transform UK bronze parquets into silver layer.
-
-    Valid card_ids (found in tcg-bronze/cards/) -> tcg-silver/data/uk/
-    Invalid card_ids -> tcg-silver/quarantine/uk/
-    """
-    minio_client = context.resources.minio_client
-
-    try:
-        active = SparkSession.getActiveSession()
-        if active:
-            active.stop()
-    except Exception:
-        pass
-
-    server = SparkConnectServer("127.0.0.1", 0)
-    server.start(background=True)
-    addr, port = server.listening_address
-    context.log.info(f"SparkConnectServer started at sc://localhost:{port}")
-
-    spark = None
-    try:
-        spark = SparkSession.builder.remote(f"sc://localhost:{port}").appName("silver_uk_transform").getOrCreate()
-        context.log.info("Connected to Spark")
-        result = _run_silver_transform(spark, minio_client, "UK")
-        context.log.info(f"UK transform done: {result}")
-    finally:
-        if spark:
-            try:
-                spark.stop()
-            except Exception:
-                pass
-        server.stop()
-
-    sample_meta = {}
-    if result.get("sample"):
-        for i, row in enumerate(result["sample"][:3]):
-            for col, val in row.items():
-                sample_meta[f"sample_{i+1}.{col}"] = str(val) if val else ""
-
-    return dg.MaterializeResult(
-        metadata={
-            "valid_records": result["valid"],
-            "quarantined_records": result["quarantine"],
-            **sample_meta,
-        }
-    )
+silver_de_transform = make_silver_asset("de")
+silver_uk_transform = make_silver_asset("uk")
