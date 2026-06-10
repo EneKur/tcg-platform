@@ -88,3 +88,37 @@ def test_cards_optional_fields_default_to_empty_string_or_zero():
     assert row["power"] == 0
     assert row["cost"] == 0
     assert row["color"] == ""
+
+
+def test_cards_scraped_at_stamped_at_call_time():
+    before = datetime.now(timezone.utc)
+    bytes_out, _ = card_records_to_parquet([_make_card()], "2026-06-10")
+    after = datetime.now(timezone.utc)
+
+    table = pq.read_table(BufferReader(bytes_out))
+    stamped = datetime.fromisoformat(table.to_pylist()[0]["scraped_at"])
+    slack = __import__("datetime").timedelta(seconds=1)
+    assert before - slack <= stamped <= after + slack
+
+
+def test_cards_partition_date_argument_is_ignored():
+    card = _make_card()
+    bytes_a, count_a = card_records_to_parquet([card], "2026-06-10")
+    bytes_b, count_b = card_records_to_parquet([card], "2099-12-31")
+    assert count_a == count_b == 1
+
+    table_a = pq.read_table(BufferReader(bytes_a))
+    table_b = pq.read_table(BufferReader(bytes_b))
+    assert table_a.column_names == table_b.column_names
+    row_a = table_a.to_pylist()[0]
+    row_b = table_b.to_pylist()[0]
+    for col in table_a.column_names:
+        if col == "scraped_at":
+            continue
+        assert row_a[col] == row_b[col], f"{col} differs"
+
+
+def test_cards_returned_row_count_matches_input():
+    cards = [_make_card(card_id=f"OP01-{i:03d}") for i in range(1, 6)]
+    _, count = card_records_to_parquet(cards, "2026-06-10")
+    assert count == 5
