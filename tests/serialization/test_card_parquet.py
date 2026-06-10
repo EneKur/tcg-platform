@@ -182,3 +182,36 @@ def test_prices_title_defaults_to_empty_string():
     bytes_out, _ = price_records_to_parquet([price], "2026-06-10")
     table = pq.read_table(BufferReader(bytes_out))
     assert table.column("title").to_pylist() == [""]
+
+
+def test_prices_title_passed_through_when_set():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(title="Monkey D. Luffy (Alt Art)")],
+        "2026-06-10",
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("title").to_pylist() == ["Monkey D. Luffy (Alt Art)"]
+
+
+def test_prices_card_version_none_becomes_empty_string():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(card_version=None)],
+        "2026-06-10",
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("card_version").to_pylist() == [""]
+
+
+def test_prices_sold_date_none_becomes_empty_string():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(sold_date=None)],
+        "2026-06-10",
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("sold_date").to_pylist() == [""]
+
+
+def test_prices_returned_row_count_matches_input():
+    prices = [_make_price(card_id=f"OP01-{i:03d}") for i in range(1, 4)]
+    _, count = price_records_to_parquet(prices, "2026-06-10")
+    assert count == 3
