@@ -18,8 +18,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow import BufferReader
 
-from tcg_platform.scraping.models import CardRecord
-from tcg_platform.serialization.card_parquet import card_records_to_parquet
+from tcg_platform.scraping.models import CardRecord, PriceRecord
+from tcg_platform.serialization.card_parquet import (
+    card_records_to_parquet,
+    price_records_to_parquet,
+)
 
 
 def _make_card(**overrides) -> CardRecord:
@@ -40,6 +43,28 @@ def _make_card(**overrides) -> CardRecord:
     )
     base.update(overrides)
     return CardRecord(**base)
+
+
+def _make_price(**overrides) -> PriceRecord:
+    """Build a fully-populated PriceRecord; override any field by name."""
+    base = dict(
+        card_id="OP01-001",
+        card_version="v1",
+        event_type="price_update",
+        price=12.50,
+        currency="USD",
+        sold_date="2026-06-09",
+        scraped_from="limitlesstcg",
+        source="US",
+        source_url="https://onepiece.limitlesstcg.com/cards/OP01-001",
+        language="EN",
+        scraped_at=datetime(2026, 6, 10, tzinfo=timezone.utc),
+        image_url="https://limitlesstcg.nyc3.digitaloceanspaces.com/OP01/OP01-001.webp",
+        local_image_path="cards/OP01/OP01-001.webp",
+        title="Monkey D. Luffy",
+    )
+    base.update(overrides)
+    return PriceRecord(**base)
 
 
 def test_cards_empty_input_returns_zero_row_parquet():
@@ -122,3 +147,38 @@ def test_cards_returned_row_count_matches_input():
     cards = [_make_card(card_id=f"OP01-{i:03d}") for i in range(1, 6)]
     _, count = card_records_to_parquet(cards, "2026-06-10")
     assert count == 5
+
+
+def test_prices_empty_input_returns_zero_row_parquet():
+    bytes_out, count = price_records_to_parquet([], "2026-06-10")
+    assert count == 0
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.num_rows == 0
+
+
+def test_prices_event_id_column_is_always_empty_string():
+    bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "event_id" in table.column_names
+    assert table.column("event_id").to_pylist() == [""]
+
+
+def test_prices_image_url_and_local_image_path_are_dropped():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(
+            image_url="https://cdn.example.com/x.webp",
+            local_image_path="cards/OP01/x.webp",
+        )],
+        "2026-06-10",
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "image_url" not in table.column_names
+    assert "local_image_path" not in table.column_names
+
+
+def test_prices_title_defaults_to_empty_string():
+    price = _make_price()
+    object.__delattr__(price, "title")
+    bytes_out, _ = price_records_to_parquet([price], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("title").to_pylist() == [""]
