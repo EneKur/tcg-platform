@@ -135,7 +135,7 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 
 ### Outstanding (post-M8)
 - **M8-T5 — Cardlist parquet writer for Limitless** — `bronze_cardlist_parquet` and `bronze_fact_events_parquet` assets were deferred from M3-T2 (data needed cleaning/structuring first; M7's `silver_*_transform` did the cleaning but the writer was never built). Outstanding since 2026-05-28.
-- **M8-T6 — Silver `is_valid_card_id` path bug** — flagged in 2026-06-07 session log; not yet root-caused. Outstanding.
+- **M8-T6 — Silver `is_valid_card_id` path bug** — flagged in 2026-06-07 session log; not root-caused. Reviewed on 2026-06-10 and removed from scope: no failing test reproduces it, and the only session-log reference is the single phrase "path bug" with no symptom description. Treat as stale unless a real failure surfaces.
 - **M8-T7 — DE/UK factory refactor** — `reconcile_quarantine.py` (added in M8-T3) duplicates DE/UK across `_reconcile_region`, `reconcile_quarantine_de`, `reconcile_quarantine_uk`, mirroring the same duplication in `silver_transform.py` for `silver_de_transform` / `silver_uk_transform`. Candidate for a single factory-pattern refactor that converts all three pairs at once. Per M8-T3 spec: "do it as a single follow-up PR, don't fork patterns."
 - **14 `failed_card_ids` from `sync_card_images`** — CDN gaps on the Limitless side; no fix in this codebase. Outstanding.
 - **M5-T2 deferred work** — Dagster schedules (daily full refresh + hourly incremental) never implemented. Still deferred.
