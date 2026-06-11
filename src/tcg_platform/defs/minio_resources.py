@@ -20,6 +20,14 @@ def _get_minio_config(prefix: str = "MINIO") -> dict:
     }
 
 
+def _get_raw_config() -> dict:
+    """Like _get_minio_config but defaults bucket_name to 'tcg-raw'."""
+    config = _get_minio_config(prefix="RAW")
+    if config["bucket_name"] == "tcg-bronze":
+        config["bucket_name"] = "tcg-raw"
+    return config
+
+
 @resource
 def minio_client(init_context: InitResourceContext):
     config = _get_minio_config()
@@ -30,5 +38,12 @@ def minio_client(init_context: InitResourceContext):
 @resource
 def minio_client_zyte(init_context: InitResourceContext):
     config = _get_minio_config(prefix="ZYTE_MINIO")
+    client = MinioClientResource(**config)
+    return client.create_resource(init_context)
+
+
+@resource
+def tcg_raw_client(init_context: InitResourceContext):
+    config = _get_raw_config()
     client = MinioClientResource(**config)
     return client.create_resource(init_context)
