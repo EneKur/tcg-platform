@@ -93,11 +93,11 @@ def _backfill_region(
 
 
 @dg.asset(
-    required_resource_keys={"zyte_session_resource", "minio_client", "sqlite_client_de"},
+    required_resource_keys={"zyte_session_resource", "tcg_raw_client", "sqlite_client_de"},
 )
 def backfill_raw_html_de(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     counts = _backfill_region(
-        context.resources.minio_client,
+        context.resources.tcg_raw_client,
         context.resources.zyte_session_resource,
         context.resources.sqlite_client_de,
         "DE",
@@ -107,11 +107,11 @@ def backfill_raw_html_de(context: dg.AssetExecutionContext) -> dg.MaterializeRes
 
 
 @dg.asset(
-    required_resource_keys={"zyte_session_resource", "minio_client", "sqlite_client_uk"},
+    required_resource_keys={"zyte_session_resource", "tcg_raw_client", "sqlite_client_uk"},
 )
 def backfill_raw_html_uk(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     counts = _backfill_region(
-        context.resources.minio_client,
+        context.resources.tcg_raw_client,
         context.resources.zyte_session_resource,
         context.resources.sqlite_client_uk,
         "UK",

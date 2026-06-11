@@ -28,7 +28,8 @@ def _is_proxy_title(card_id: str) -> bool:
 
 
 def _transform_region(
-    minio_client: MinioClientResource,
+    raw_minio_client: MinioClientResource,
+    bronze_minio_client: MinioClientResource,
     sqlite_client,
     region: str,
     written_items: list[dict],
@@ -57,7 +58,7 @@ def _transform_region(
 
         # Read raw HTML
         try:
-            html = minio_client.get_object(
+            html = raw_minio_client.get_object(
                 RAW_BUCKET, f"ebay/{upper}/{event_id}.html"
             ).decode("utf-8")
         except Exception as e:
@@ -69,7 +70,7 @@ def _transform_region(
         image_path = None
         try:
             image_path = f"sold_images/{lower}/{event_id}.jpg"
-            minio_client.get_object(RAW_BUCKET, image_path)
+            raw_minio_client.get_object(RAW_BUCKET, image_path)
             counts["read_image"] += 1
         except Exception:
             counts["image_missing"] += 1
@@ -101,7 +102,7 @@ def _transform_region(
             parquet_bytes, _ = price_records_to_parquet(
                 [rec], rec.scraped_at.strftime("%Y-%m-%d")
             )
-            minio_client.put_object(
+            bronze_minio_client.put_object(
                 bucket_name=BRONZE_BUCKET,
                 object_name=f"sold_data/{upper}/{event_id}.parquet",
                 data=parquet_bytes,
@@ -134,17 +135,18 @@ def _transform_region(
 
 
 @dg.asset(
-    required_resource_keys={"minio_client", "sqlite_client_de"},
+    required_resource_keys={"tcg_raw_client", "minio_client", "sqlite_client_de"},
 )
 def transform_ebay_de_to_bronze(
     context: dg.AssetExecutionContext,
     scrape_ebay_de_raw: list,
 ) -> dg.MaterializeResult:
-    minio_client = context.resources.minio_client
+    raw_minio_client = context.resources.tcg_raw_client
+    bronze_minio_client = context.resources.minio_client
     sqlite_client = context.resources.sqlite_client_de
 
     counts = _transform_region(
-        minio_client, sqlite_client, "DE",
+        raw_minio_client, bronze_minio_client, sqlite_client, "DE",
         scrape_ebay_de_raw, parse_ebay_de_item_page,
     )
     context.log.info(f"DE transform: {counts}")
@@ -152,17 +154,18 @@ def transform_ebay_de_to_bronze(
 
 
 @dg.asset(
-    required_resource_keys={"minio_client", "sqlite_client_uk"},
+    required_resource_keys={"tcg_raw_client", "minio_client", "sqlite_client_uk"},
 )
 def transform_ebay_uk_to_bronze(
     context: dg.AssetExecutionContext,
     scrape_ebay_uk_raw: list,
 ) -> dg.MaterializeResult:
-    minio_client = context.resources.minio_client
+    raw_minio_client = context.resources.tcg_raw_client
+    bronze_minio_client = context.resources.minio_client
     sqlite_client = context.resources.sqlite_client_uk
 
     counts = _transform_region(
-        minio_client, sqlite_client, "UK",
+        raw_minio_client, bronze_minio_client, sqlite_client, "UK",
         scrape_ebay_uk_raw, parse_ebay_uk_item_page,
     )
     context.log.info(f"UK transform: {counts}")

@@ -89,11 +89,11 @@ def _bad_html_no_title():
     return '<html><body><div data-testid="x-price-primary"><span class="ux-textspans">EUR 5,00</span></div></body></html>'
 
 
-def _make_resource(fake_client):
+def _make_resource(fake_client, bucket_name="tcg-bronze"):
     from tcg_platform.resources.minio_client import MinioClientResource
     resource = MinioClientResource(
         endpoint="localhost:9000", access_key="x", secret_key="y",
-        bucket_name="tcg-bronze",
+        bucket_name=bucket_name,
     )
     resource._client = fake_client
     return resource
@@ -104,10 +104,11 @@ def test_transform_reads_raw_writes_bronze(monkeypatch):
     from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
     minio = FakeMinioClient(raw_html=_good_de_html().encode("utf-8"))
     sqlite = FakeSqliteClient()
-    resource = _make_resource(minio.client)
+    raw_resource = _make_resource(minio.client, bucket_name="tcg-raw")
+    bronze_resource = _make_resource(minio.client, bucket_name="tcg-bronze")
 
     written_items = [{"event_id": "99999", "region": "DE", "sold_date": "2026-06-11"}]
-    counts = _transform_region(resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
+    counts = _transform_region(raw_resource, bronze_resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
 
     assert counts["read_html"] == 1
     assert counts["wrote_parquet"] == 1
@@ -130,10 +131,11 @@ def test_transform_handles_missing_image_gracefully(monkeypatch):
     from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
     minio = FakeMinioClient(raw_html=_good_de_html().encode("utf-8"), raw_image=None)
     sqlite = FakeSqliteClient()
-    resource = _make_resource(minio.client)
+    raw_resource = _make_resource(minio.client, bucket_name="tcg-raw")
+    bronze_resource = _make_resource(minio.client, bucket_name="tcg-bronze")
 
     written_items = [{"event_id": "99999", "region": "DE"}]
-    counts = _transform_region(resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
+    counts = _transform_region(raw_resource, bronze_resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
     assert counts["wrote_parquet"] == 1
     assert counts["image_missing"] == 1
 
@@ -143,10 +145,11 @@ def test_transform_handles_parse_failure(monkeypatch):
     from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
     minio = FakeMinioClient(raw_html=_bad_html_no_title().encode("utf-8"))
     sqlite = FakeSqliteClient()
-    resource = _make_resource(minio.client)
+    raw_resource = _make_resource(minio.client, bucket_name="tcg-raw")
+    bronze_resource = _make_resource(minio.client, bucket_name="tcg-bronze")
 
     written_items = [{"event_id": "99999", "region": "DE"}]
-    counts = _transform_region(resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
+    counts = _transform_region(raw_resource, bronze_resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
     assert counts["skipped_empty"] == 1
     assert counts["wrote_parquet"] == 0
     assert len(sqlite.inserts) == 0
@@ -157,23 +160,29 @@ def test_transform_filters_wrong_region_in_input(monkeypatch):
     from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
     minio = FakeMinioClient(raw_html=_good_de_html().encode("utf-8"))
     sqlite = FakeSqliteClient()
-    resource = _make_resource(minio.client)
+    raw_resource = _make_resource(minio.client, bucket_name="tcg-raw")
+    bronze_resource = _make_resource(minio.client, bucket_name="tcg-bronze")
 
     # Pass UK item to DE transformer
     written_items = [{"event_id": "99999", "region": "UK"}]
-    counts = _transform_region(resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
+    counts = _transform_region(raw_resource, bronze_resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
     assert counts["read_html"] == 0  # filtered out
     assert counts["wrote_parquet"] == 0
 
 
 def test_transform_assets_are_dagster_assets_with_scraper_deps():
-    """Both transform assets must depend on their corresponding scraper asset."""
+    """Both transform assets must depend on their corresponding scraper asset
+    and require BOTH minio clients (raw for reads, bronze for writes) plus
+    the region-specific sqlite client."""
     de_deps = transform_ebay_de_to_bronze.dependency_keys
     uk_deps = transform_ebay_uk_to_bronze.dependency_keys
     # The dependency is the scraper asset key
     assert AssetKey("scrape_ebay_de_raw") in de_deps
     assert AssetKey("scrape_ebay_uk_raw") in uk_deps
-    # Both need minio_client + sqlite_client
+    # Both need both minio clients + the region-specific sqlite client
     for asset in (transform_ebay_de_to_bronze, transform_ebay_uk_to_bronze):
         assert isinstance(asset, dg.AssetsDefinition)
+        assert "tcg_raw_client" in asset.required_resource_keys
         assert "minio_client" in asset.required_resource_keys
+    assert "sqlite_client_de" in transform_ebay_de_to_bronze.required_resource_keys
+    assert "sqlite_client_uk" in transform_ebay_uk_to_bronze.required_resource_keys

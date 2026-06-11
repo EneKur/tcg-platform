@@ -264,7 +264,7 @@ def _write_log(minio_client, log_lines: list[str]) -> bytes | None:
 
 
 @dg.asset(
-    required_resource_keys={"zyte_session_resource", "minio_client"},
+    required_resource_keys={"zyte_session_resource", "tcg_raw_client"},
     metadata={"region": "DE"},
 )
 def scrape_ebay_de_raw(context: dg.AssetExecutionContext) -> list:
@@ -275,7 +275,7 @@ def scrape_ebay_de_raw(context: dg.AssetExecutionContext) -> list:
     that already have raw HTML persisted (atomic check on MinIO).
     Writes a run log to tcg-raw/logs/{timestamp}.log at end of run.
     """
-    minio_client = context.resources.minio_client
+    minio_client = context.resources.tcg_raw_client
     zyte_client = context.resources.zyte_session_resource
 
     written, log_lines = _scrape_region(
@@ -292,12 +292,12 @@ def scrape_ebay_de_raw(context: dg.AssetExecutionContext) -> list:
 
 
 @dg.asset(
-    required_resource_keys={"zyte_session_resource", "minio_client"},
+    required_resource_keys={"zyte_session_resource", "tcg_raw_client"},
     metadata={"region": "UK"},
 )
 def scrape_ebay_uk_raw(context: dg.AssetExecutionContext) -> list:
     """Scrape eBay UK sold-listings into tcg-raw. Symmetric to scrape_ebay_de_raw."""
-    minio_client = context.resources.minio_client
+    minio_client = context.resources.tcg_raw_client
     zyte_client = context.resources.zyte_session_resource
 
     written, log_lines = _scrape_region(
