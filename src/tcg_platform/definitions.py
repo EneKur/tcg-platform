@@ -13,6 +13,7 @@ from tcg_platform.defs.currency_rates_resource import (
 )
 from tcg_platform.defs.minio_resources import (
     minio_client,
+    tcg_raw_client,
 )
 from tcg_platform.resources.sqlite_client import (
     SqliteClientResource,
@@ -81,6 +82,30 @@ sync_card_images_job = define_asset_job(
     description="Diff Limitless catalog against tcg-bronze/cards/, download missing images.",
 )
 
+ebay_de_raw_to_bronze_job = define_asset_job(
+    name="ebay_de_raw_to_bronze",
+    selection=["scrape_ebay_de_raw", "transform_ebay_de_to_bronze"],
+    description="DE: scrape tcg-raw + transform to tcg-bronze",
+)
+
+ebay_uk_raw_to_bronze_job = define_asset_job(
+    name="ebay_uk_raw_to_bronze",
+    selection=["scrape_ebay_uk_raw", "transform_ebay_uk_to_bronze"],
+    description="UK: scrape tcg-raw + transform to tcg-bronze",
+)
+
+backfill_raw_html_de_job = define_asset_job(
+    name="backfill_raw_html_de_job",
+    selection=["backfill_raw_html_de"],
+    description="One-time: fetch raw HTML for existing DE fact_events rows.",
+)
+
+backfill_raw_html_uk_job = define_asset_job(
+    name="backfill_raw_html_uk_job",
+    selection=["backfill_raw_html_uk"],
+    description="One-time: fetch raw HTML for existing UK fact_events rows.",
+)
+
 
 @definitions
 def defs():
@@ -101,11 +126,17 @@ def defs():
             sync_card_images_job,
             reconcile_quarantine_de_job,
             reconcile_quarantine_uk_job,
+            # NEW for M9-T1
+            ebay_de_raw_to_bronze_job,
+            ebay_uk_raw_to_bronze_job,
+            backfill_raw_html_de_job,
+            backfill_raw_html_uk_job,
         ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
             "currency_rates_db": currency_rates_db,
             "minio_client": minio_client,
+            "tcg_raw_client": tcg_raw_client,
             "sqlite_client_de": SqliteClientResource(db_path="./data/tcg_de.db"),
             "sqlite_client_uk": SqliteClientResource(db_path="./data/tcg_uk.db"),
             "zyte_session_resource": zyte_session_resource,
