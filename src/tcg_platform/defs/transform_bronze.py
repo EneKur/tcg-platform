@@ -19,6 +19,13 @@ _LOG = logging.getLogger(__name__)
 RAW_BUCKET = "tcg-raw"
 BRONZE_BUCKET = "tcg-bronze"
 
+_PROXY_INDICATORS = ["proxy", "dummy", "fake card", "replica"]
+
+
+def _is_proxy_title(card_id: str) -> bool:
+    card_lower = card_id.lower()
+    return any(ind in card_lower for ind in _PROXY_INDICATORS)
+
 
 def _transform_region(
     minio_client: MinioClientResource,
@@ -103,7 +110,6 @@ def _transform_region(
             )
             counts["wrote_parquet"] += 1
 
-            from tcg_platform.defs.bronze_ebay_sqlite_writer import _is_proxy_title
             if not _is_proxy_title(rec.card_id):
                 sqlite_client.execute(
                     """

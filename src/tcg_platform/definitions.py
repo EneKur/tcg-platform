@@ -33,25 +33,6 @@ from tcg_platform.defs.reconcile_quarantine import (
 )
 
 
-ebay_de_job = define_asset_job(
-    name="ebay_de_pipeline",
-    selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer"],
-    description="Scrape DE eBay sold listings, persist to SQLite",
-)
-
-ebay_uk_job = define_asset_job(
-    name="ebay_uk_pipeline",
-    selection=["ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer"],
-    description="Scrape UK eBay sold listings, persist to SQLite",
-)
-
-ebay_eu_job = define_asset_job(
-    name="ebay_eu_pipeline",
-    selection=["ebay_de_sold_listings", "bronze_ebay_de_sqlite_writer",
-               "ebay_uk_sold_listings", "bronze_ebay_uk_sqlite_writer"],
-    description="Scrape DE+UK eBay sold listings, persist to SQLite",
-)
-
 silver_de_job = define_asset_job(
     name="silver_de_pipeline",
     selection=["silver_de_transform"],
@@ -114,9 +95,6 @@ def defs():
         assets=base.assets,
         asset_checks=base.asset_checks,
         jobs=[
-            ebay_de_job,
-            ebay_uk_job,
-            ebay_eu_job,
             backfill_de_job,
             backfill_uk_job,
             silver_de_job,

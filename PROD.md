@@ -14,7 +14,9 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
                         eBay sold listings       sc://localhost:{port}
 ```
 
-**Bronze layer:** Raw scraped data — unchanged from source, stored as parquet files in MinIO + tabular entries in SQLite. Idempotent (re-running produces same output, no duplicates).
+**Raw layer (`tcg-raw`):** Bytes only — HTML, images, scrape logs. One object per eBay item, named by `event_id`. Write-once.
+
+**Bronze layer:** Structured, parsed views of the source data, stored as parquet files in MinIO + tabular entries in SQLite. Every bronze row is **derivable from `tcg-raw`** by replaying the transformer — bronze is a cache, not a source of truth.
 
 **Silver layer:** LakeSail-based transformations (deduplication, enrichment, type casting) — running locally as a Spark-alternative for fast, efficient in-process lakehouse processing.
 
@@ -192,7 +194,8 @@ SQLITE_PATH=./data/tcg.db
 
 | Bucket | Contents |
 |--------|----------|
-| `tcg-bronze` | Raw scraped data: `sold_data/{DE\|UK}/` parquets, `cards/{set}/` images |
+| `tcg-raw` | Persistent raw scrape bytes: `ebay/{DE\|UK}/{event_id}.html`, `sold_images/{DE\|UK}/{event_id}.jpg`, `logs/{ts}.log` |
+| `tcg-bronze` | Parsed structured data: `sold_data/{DE\|UK}/` parquets, `cards/{set}/` images — derivable from `tcg-raw` |
 | `tcg-silver` | Validated records: `data/{de\|uk}/`, quarantined: `quarantine/{de\|uk}/` |
 
 ## Conventions
