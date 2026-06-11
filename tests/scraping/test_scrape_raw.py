@@ -414,6 +414,12 @@ def test_scrape_assets_are_dagster_assets():
         assert isinstance(asset, dg.AssetsDefinition)
         keys = asset.required_resource_keys
         assert "zyte_session_resource" in keys
+        # Scraper writes to tcg-raw only — must use tcg_raw_client, NOT
+        # minio_client (which is bound to tcg-bronze). Regression: the
+        # smoke test for M9-T1 caught this when backfill tried to put
+        # to tcg-raw via minio_client and got NoSuchBucket.
+        assert "tcg_raw_client" in keys
+        assert "minio_client" not in keys
 
 
 def test_write_log_writes_blob_to_logs_prefix(monkeypatch):

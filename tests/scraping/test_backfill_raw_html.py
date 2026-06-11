@@ -114,3 +114,22 @@ def test_backfill_counts_shape(monkeypatch):
     resource = _make_resource_with_fake(minio.client)
     counts = _backfill_region(resource, zyte, sqlite, "DE")
     assert set(counts.keys()) == {"checked", "already_have", "fetched", "failed"}
+
+
+def test_backfill_assets_use_tcg_raw_client_resource():
+    """Backfill writes to tcg-raw only — must use tcg_raw_client, NOT minio_client.
+
+    Regression: the M9-T1 smoke test caught this when the backfill tried
+    to put to tcg-raw via minio_client and got NoSuchBucket. The asset
+    would silently fail to persist.
+    """
+    import dagster as dg
+    from tcg_platform.defs.backfill_raw_html import (
+        backfill_raw_html_de,
+        backfill_raw_html_uk,
+    )
+    for asset in (backfill_raw_html_de, backfill_raw_html_uk):
+        assert isinstance(asset, dg.AssetsDefinition)
+        keys = asset.required_resource_keys
+        assert "tcg_raw_client" in keys
+        assert "minio_client" not in keys
