@@ -7,7 +7,11 @@ bronze layer (parquet files + SQLite fact_events rows).
 import logging
 from datetime import datetime, timezone
 
+import dagster as dg
+
 from tcg_platform.resources.minio_client import MinioClientResource
+from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+from tcg_platform.scraping.ebay_uk_item import parse_ebay_uk_item_page
 from tcg_platform.serialization.card_parquet import price_records_to_parquet
 
 _LOG = logging.getLogger(__name__)
@@ -121,3 +125,39 @@ def _transform_region(
                 counts["wrote_sqlite"] += 1
 
     return counts
+
+
+@dg.asset(
+    required_resource_keys={"minio_client", "sqlite_client_de"},
+)
+def transform_ebay_de_to_bronze(
+    context: dg.AssetExecutionContext,
+    scrape_ebay_de_raw: list,
+) -> dg.MaterializeResult:
+    minio_client = context.resources.minio_client
+    sqlite_client = context.resources.sqlite_client_de
+
+    counts = _transform_region(
+        minio_client, sqlite_client, "DE",
+        scrape_ebay_de_raw, parse_ebay_de_item_page,
+    )
+    context.log.info(f"DE transform: {counts}")
+    return dg.MaterializeResult(metadata=counts)
+
+
+@dg.asset(
+    required_resource_keys={"minio_client", "sqlite_client_uk"},
+)
+def transform_ebay_uk_to_bronze(
+    context: dg.AssetExecutionContext,
+    scrape_ebay_uk_raw: list,
+) -> dg.MaterializeResult:
+    minio_client = context.resources.minio_client
+    sqlite_client = context.resources.sqlite_client_uk
+
+    counts = _transform_region(
+        minio_client, sqlite_client, "UK",
+        scrape_ebay_uk_raw, parse_ebay_uk_item_page,
+    )
+    context.log.info(f"UK transform: {counts}")
+    return dg.MaterializeResult(metadata=counts)

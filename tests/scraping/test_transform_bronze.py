@@ -1,7 +1,13 @@
 """Tests for the offline tcg-raw → tcg-bronze transformer."""
+import dagster as dg
+from dagster import AssetKey
 from io import BytesIO
 
-from tcg_platform.defs.transform_bronze import _transform_region
+from tcg_platform.defs.transform_bronze import (
+    _transform_region,
+    transform_ebay_de_to_bronze,
+    transform_ebay_uk_to_bronze,
+)
 
 
 class FakeMinioClient:
@@ -158,3 +164,16 @@ def test_transform_filters_wrong_region_in_input(monkeypatch):
     counts = _transform_region(resource, sqlite, "DE", written_items, parse_ebay_de_item_page)
     assert counts["read_html"] == 0  # filtered out
     assert counts["wrote_parquet"] == 0
+
+
+def test_transform_assets_are_dagster_assets_with_scraper_deps():
+    """Both transform assets must depend on their corresponding scraper asset."""
+    de_deps = transform_ebay_de_to_bronze.dependency_keys
+    uk_deps = transform_ebay_uk_to_bronze.dependency_keys
+    # The dependency is the scraper asset key
+    assert AssetKey("scrape_ebay_de_raw") in de_deps
+    assert AssetKey("scrape_ebay_uk_raw") in uk_deps
+    # Both need minio_client + sqlite_client
+    for asset in (transform_ebay_de_to_bronze, transform_ebay_uk_to_bronze):
+        assert isinstance(asset, dg.AssetsDefinition)
+        assert "minio_client" in asset.required_resource_keys
