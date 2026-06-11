@@ -240,3 +240,74 @@ def _scrape_region(
         f"images_failed={images_failed} written={len(written)}"
     )
     return written, log
+
+
+def _write_log(minio_client, log_lines: list[str]) -> bytes | None:
+    """Write a run log to tcg-raw/logs/{timestamp}.log.
+
+    Returns the written blob (also for test inspection), or None if
+    the write itself failed.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M")
+    log_blob = "\n".join(log_lines).encode("utf-8")
+    try:
+        minio_client.put_object(
+            bucket_name=RAW_BUCKET,
+            object_name=f"logs/{ts}.log",
+            data=log_blob,
+            length=len(log_blob),
+            content_type="text/plain",
+        )
+        return log_blob
+    except Exception:
+        return None
+
+
+@dg.asset(
+    required_resource_keys={"zyte_session_resource", "minio_client"},
+    metadata={"region": "DE"},
+)
+def scrape_ebay_de_raw(context: dg.AssetExecutionContext) -> list:
+    """Scrape eBay DE sold-listings into tcg-raw.
+
+    Writes per-item HTML to tcg-raw/ebay/DE/{event_id}.html and per-item
+    images to tcg-raw/sold_images/DE/{event_id}.jpg. Skips event_ids
+    that already have raw HTML persisted (atomic check on MinIO).
+    Writes a run log to tcg-raw/logs/{timestamp}.log at end of run.
+    """
+    minio_client = context.resources.minio_client
+    zyte_client = context.resources.zyte_session_resource
+
+    written, log_lines = _scrape_region(
+        minio_client, zyte_client, "DE",
+        de_search_url_for_page, parse_ebay_de_search_page,
+    )
+    _write_log(minio_client, log_lines)
+
+    context.log.info(f"DE scrape complete: written={len(written)}")
+    return [
+        {"event_id": w.event_id, "region": w.region, "sold_date": w.sold_date}
+        for w in written
+    ]
+
+
+@dg.asset(
+    required_resource_keys={"zyte_session_resource", "minio_client"},
+    metadata={"region": "UK"},
+)
+def scrape_ebay_uk_raw(context: dg.AssetExecutionContext) -> list:
+    """Scrape eBay UK sold-listings into tcg-raw. Symmetric to scrape_ebay_de_raw."""
+    minio_client = context.resources.minio_client
+    zyte_client = context.resources.zyte_session_resource
+
+    written, log_lines = _scrape_region(
+        minio_client, zyte_client, "UK",
+        uk_search_url_for_page, parse_ebay_uk_search_page,
+    )
+    _write_log(minio_client, log_lines)
+
+    context.log.info(f"UK scrape complete: written={len(written)}")
+    return [
+        {"event_id": w.event_id, "region": w.region, "sold_date": w.sold_date}
+        for w in written
+    ]

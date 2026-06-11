@@ -1,7 +1,15 @@
+import dagster as dg
 from minio.error import S3Error
 
 from tcg_platform.resources.minio_client import MinioClientResource
-from tcg_platform.defs.scrape_raw import _exists_in_raw, _scrape_region, WrittenItem
+from tcg_platform.defs.scrape_raw import (
+    WrittenItem,
+    _exists_in_raw,
+    _scrape_region,
+    _write_log,
+    scrape_ebay_de_raw,
+    scrape_ebay_uk_raw,
+)
 
 
 def _make_resource_with_fake(fake_client):
@@ -398,4 +406,39 @@ def test_scrape_region_handles_failed_zyte_call(monkeypatch):
     assert written[0].event_id == "22222"
     assert any("FAIL zyte event_id=11111" in line for line in log_lines)
     assert any("WROTE html event_id=22222" in line for line in log_lines)
+
+
+def test_scrape_assets_are_dagster_assets():
+    """Both assets must be Dagster @asset-decorated and have the right resource keys."""
+    for asset in (scrape_ebay_de_raw, scrape_ebay_uk_raw):
+        assert isinstance(asset, dg.AssetsDefinition)
+        keys = asset.required_resource_keys
+        assert "zyte_session_resource" in keys
+
+
+def test_write_log_writes_blob_to_logs_prefix(monkeypatch):
+    """_write_log puts a blob to tcg-raw/logs/{ts}.log and returns the blob."""
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
+    minio = FakeMinioClient()
+    from tcg_platform.resources.minio_client import MinioClientResource
+    resource = MinioClientResource(
+        endpoint="localhost:9000", access_key="x", secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = minio.client
+
+    log_lines = ["2026-06-11T18:08:32+00:00 START region=DE", "2026-06-11T18:09:12+00:00 END region=DE"]
+    log_blob = _write_log(resource, log_lines)
+    assert log_blob is not None
+    assert log_blob.startswith(b"20")  # ISO timestamp prefix
+    assert b"START region=DE" in log_blob
+    assert b"END region=DE" in log_blob
+
+    # Confirm the put happened for a logs/ path
+    log_puts = [p for p in minio.puts if p["object_name"].startswith("logs/")]
+    assert len(log_puts) == 1
+    assert log_puts[0]["object_name"].startswith("logs/")
+    assert log_puts[0]["object_name"].endswith(".log")
+
 
