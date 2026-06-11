@@ -1,6 +1,19 @@
 # tests/scraping/test_backfill_raw_html.py
 from minio.error import S3Error
 from tcg_platform.defs.backfill_raw_html import _backfill_region
+from tcg_platform.resources.minio_client import MinioClientResource
+
+
+def _make_resource_with_fake(fake_client):
+    """Build a MinioClientResource wired to a fake minio client."""
+    resource = MinioClientResource(
+        endpoint="localhost:9000",
+        access_key="x",
+        secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = fake_client
+    return resource
 
 
 class FakeMinioClient:
@@ -56,26 +69,32 @@ class FakeZyteClient:
         }
 
 
-def test_backfill_skips_event_ids_already_in_raw():
+def test_backfill_skips_event_ids_already_in_raw(monkeypatch):
     """If raw HTML already exists for an event_id, no Zyte call happens for it."""
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
     minio = FakeMinioClient(existing_event_ids=["11111"])
     sqlite = FakeSqliteClient(["https://www.ebay.de/itm/11111"])
     zyte = FakeZyteClient()
 
-    counts = _backfill_region(minio.client, zyte, sqlite, "DE")
+    resource = _make_resource_with_fake(minio.client)
+    counts = _backfill_region(resource, zyte, sqlite, "DE")
     assert counts["checked"] == 1
     assert counts["already_have"] == 1
     assert counts["fetched"] == 0
     assert len(zyte.calls) == 0  # no Zyte call for the already-present event
 
 
-def test_backfill_fetches_and_writes_missing_event_ids():
+def test_backfill_fetches_and_writes_missing_event_ids(monkeypatch):
     """Missing event_ids trigger a Zyte call + raw HTML put."""
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
     minio = FakeMinioClient(existing_event_ids=[])
     sqlite = FakeSqliteClient(["https://www.ebay.de/itm/22222"])
     zyte = FakeZyteClient()
 
-    counts = _backfill_region(minio.client, zyte, sqlite, "DE")
+    resource = _make_resource_with_fake(minio.client)
+    counts = _backfill_region(resource, zyte, sqlite, "DE")
     assert counts["checked"] == 1
     assert counts["fetched"] == 1
     assert len(zyte.calls) == 1
@@ -84,11 +103,14 @@ def test_backfill_fetches_and_writes_missing_event_ids():
     assert len(html_puts) == 1
 
 
-def test_backfill_counts_shape():
+def test_backfill_counts_shape(monkeypatch):
     """Return value must have the documented keys."""
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
     minio = FakeMinioClient()
     sqlite = FakeSqliteClient([])
     zyte = FakeZyteClient()
 
-    counts = _backfill_region(minio.client, zyte, sqlite, "DE")
+    resource = _make_resource_with_fake(minio.client)
+    counts = _backfill_region(resource, zyte, sqlite, "DE")
     assert set(counts.keys()) == {"checked", "already_have", "fetched", "failed"}

@@ -48,7 +48,7 @@ def _backfill_region(
 
         # Skip if already in raw
         try:
-            minio_client.stat_object(RAW_BUCKET, f"ebay/{upper}/{event_id}.html")
+            minio_client.client.stat_object(RAW_BUCKET, f"ebay/{upper}/{event_id}.html")
             counts["already_have"] += 1
             continue
         except S3Error:
@@ -97,7 +97,7 @@ def _backfill_region(
 )
 def backfill_raw_html_de(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     counts = _backfill_region(
-        context.resources.minio_client.client,
+        context.resources.minio_client,
         context.resources.zyte_session_resource,
         context.resources.sqlite_client_de,
         "DE",
@@ -111,7 +111,7 @@ def backfill_raw_html_de(context: dg.AssetExecutionContext) -> dg.MaterializeRes
 )
 def backfill_raw_html_uk(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     counts = _backfill_region(
-        context.resources.minio_client.client,
+        context.resources.minio_client,
         context.resources.zyte_session_resource,
         context.resources.sqlite_client_uk,
         "UK",
