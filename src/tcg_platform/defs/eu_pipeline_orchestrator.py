@@ -9,10 +9,10 @@ def bronze_eu_orchestrator(context: dg.AssetExecutionContext):
     context.log.info("Starting bronze_eu_orchestrator")
     resolved = defs.load_fn()
 
-    job_def_de = resolved.resolve_job_def("ebay_de_pipeline")
-    job_def_uk = resolved.resolve_job_def("ebay_uk_pipeline")
+    job_def_de = resolved.resolve_job_def("ebay_de_raw_to_bronze")
+    job_def_uk = resolved.resolve_job_def("ebay_uk_raw_to_bronze")
 
-    context.log.info("Running ebay_de_pipeline and ebay_uk_pipeline in parallel...")
+    context.log.info("Running ebay_de_raw_to_bronze and ebay_uk_raw_to_bronze in parallel...")
     result_de = job_def_de.execute_in_process(instance=context.instance)
     result_uk = job_def_uk.execute_in_process(instance=context.instance)
 

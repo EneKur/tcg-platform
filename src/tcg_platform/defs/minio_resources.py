@@ -20,6 +20,22 @@ def _get_minio_config(prefix: str = "MINIO") -> dict:
     }
 
 
+def _get_raw_config() -> dict:
+    """Read RAW_* env vars with 'tcg-raw' as the default bucket name.
+
+    Mirrors _get_minio_config but does not reuse it, because the helper
+    hardcodes 'tcg-bronze' as its default bucket. This is the entry
+    point for the tcg_raw_client resource.
+    """
+    return {
+        "endpoint": os.getenv("RAW_ENDPOINT", "localhost:9000"),
+        "access_key": os.getenv("RAW_ACCESS_KEY", "minioadmin"),
+        "secret_key": os.getenv("RAW_SECRET_KEY", "minioadmin"),
+        "bucket_name": os.getenv("RAW_BUCKET", "tcg-raw"),
+        "secure": False,
+    }
+
+
 @resource
 def minio_client(init_context: InitResourceContext):
     config = _get_minio_config()
@@ -30,5 +46,12 @@ def minio_client(init_context: InitResourceContext):
 @resource
 def minio_client_zyte(init_context: InitResourceContext):
     config = _get_minio_config(prefix="ZYTE_MINIO")
+    client = MinioClientResource(**config)
+    return client.create_resource(init_context)
+
+
+@resource
+def tcg_raw_client(init_context: InitResourceContext):
+    config = _get_raw_config()
     client = MinioClientResource(**config)
     return client.create_resource(init_context)
