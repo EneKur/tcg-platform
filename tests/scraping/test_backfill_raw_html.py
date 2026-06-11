@@ -1,0 +1,94 @@
+# tests/scraping/test_backfill_raw_html.py
+from minio.error import S3Error
+from tcg_platform.defs.backfill_raw_html import _backfill_region
+
+
+class FakeMinioClient:
+    def __init__(self, existing_event_ids=()):
+        self.existing = set(existing_event_ids)
+        self.puts = []
+        self.stats = []
+
+        class _Client:
+            def __init__(self2, outer):
+                self2.outer = outer
+
+            def stat_object(self2, bucket, obj):
+                self2.outer.stats.append((bucket, obj))
+                # If the HTML path is in self.outer.existing, return success
+                if obj.endswith(".html"):
+                    event_id = obj.split("/")[-1].replace(".html", "")
+                    if event_id in self2.outer.existing:
+                        return None
+                raise S3Error(
+                    code="NoSuchKey", message="not found",
+                    resource="x", request_id="r", host_id="h", response=None,
+                )
+
+            def put_object(self2, bucket, obj, data, length, content_type):
+                self2.outer.puts.append((bucket, obj, data, length, content_type))
+
+        self.client = _Client(self)
+
+
+class FakeSqliteClient:
+    def __init__(self, urls):
+        # urls: list of URL strings
+        self._rows = [{"source_url": u} for u in urls]
+
+    def execute(self, query, params=(), fetch="none"):
+        if "SELECT source_url" in query:
+            # Caller-side filter is a no-op for tests; the tests only put
+            # region-matching URLs into the fake.
+            return list(self._rows)
+        return []
+
+
+class FakeZyteClient:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, request):
+        self.calls.append(request)
+        return {
+            "statusCode": 200,
+            "browserHtml": "<html><body>test</body></html>",
+        }
+
+
+def test_backfill_skips_event_ids_already_in_raw():
+    """If raw HTML already exists for an event_id, no Zyte call happens for it."""
+    minio = FakeMinioClient(existing_event_ids=["11111"])
+    sqlite = FakeSqliteClient(["https://www.ebay.de/itm/11111"])
+    zyte = FakeZyteClient()
+
+    counts = _backfill_region(minio.client, zyte, sqlite, "DE")
+    assert counts["checked"] == 1
+    assert counts["already_have"] == 1
+    assert counts["fetched"] == 0
+    assert len(zyte.calls) == 0  # no Zyte call for the already-present event
+
+
+def test_backfill_fetches_and_writes_missing_event_ids():
+    """Missing event_ids trigger a Zyte call + raw HTML put."""
+    minio = FakeMinioClient(existing_event_ids=[])
+    sqlite = FakeSqliteClient(["https://www.ebay.de/itm/22222"])
+    zyte = FakeZyteClient()
+
+    counts = _backfill_region(minio.client, zyte, sqlite, "DE")
+    assert counts["checked"] == 1
+    assert counts["fetched"] == 1
+    assert len(zyte.calls) == 1
+    # Verify a put to tcg-raw/ebay/DE/22222.html
+    html_puts = [p for p in minio.puts if p[1] == "ebay/DE/22222.html"]
+    assert len(html_puts) == 1
+
+
+def test_backfill_counts_shape():
+    """Return value must have the documented keys."""
+    minio = FakeMinioClient()
+    sqlite = FakeSqliteClient([])
+    zyte = FakeZyteClient()
+
+    counts = _backfill_region(minio.client, zyte, sqlite, "DE")
+    assert set(counts.keys()) == {"checked", "already_have", "fetched", "failed"}
