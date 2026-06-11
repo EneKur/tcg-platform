@@ -227,13 +227,14 @@ def _scrape_region(
                             f"image event_id={event_id} err={img_e}"
                         )
 
-        break
+        page += 1
 
     log.append(
         f"{datetime.now(timezone.utc).isoformat()} END region={region} "
         f"pages_fetched={pages_fetched} items_seen={items_seen} "
         f"items_skipped_already_seen={items_skipped_already_seen} "
         f"items_fetched_zyte={items_fetched_zyte} items_failed_zyte={items_failed_zyte} "
+        f"items_failed_parse={items_failed_parse} "
         f"images_downloaded={images_downloaded} "
         f"images_skipped_already_seen={images_skipped_already_seen} "
         f"images_failed={images_failed} written={len(written)}"
