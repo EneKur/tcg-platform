@@ -11,6 +11,9 @@ from tcg_platform.defs.backfill_sold_data_parquet import (
 from tcg_platform.defs.currency_rates_resource import (
     currency_rates_db,
 )
+from tcg_platform.defs.exchange_rates_asset import (
+    exchange_rates,
+)
 from tcg_platform.defs.minio_resources import (
     minio_client,
     tcg_raw_client,
@@ -30,6 +33,13 @@ from tcg_platform.defs.eu_pipeline_orchestrator import (
 from tcg_platform.defs.reconcile_quarantine import (
     reconcile_quarantine_de_job,
     reconcile_quarantine_uk_job,
+)
+
+
+exchange_rates_job = define_asset_job(
+    name="exchange_rates_job",
+    selection=["exchange_rates"],
+    description="Backfill EUR→GBP exchange rates from Frankfurter.app",
 )
 
 
@@ -109,6 +119,7 @@ def defs():
             ebay_uk_raw_to_bronze_job,
             backfill_raw_html_de_job,
             backfill_raw_html_uk_job,
+            exchange_rates_job,
         ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
