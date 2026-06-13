@@ -4,22 +4,28 @@ from dagster import AssetKey
 
 @dg.asset
 def bronze_eu_orchestrator(context: dg.AssetExecutionContext):
-    """Triggers ebay_de and ebay_uk scrapes in parallel."""
+    """Triggers ebay_de, ebay_uk scrapes and exchange_rates backfill in parallel."""
     from tcg_platform.definitions import defs
     context.log.info("Starting bronze_eu_orchestrator")
     resolved = defs.load_fn()
 
     job_def_de = resolved.resolve_job_def("ebay_de_raw_to_bronze")
     job_def_uk = resolved.resolve_job_def("ebay_uk_raw_to_bronze")
+    job_def_rates = resolved.resolve_job_def("exchange_rates_job")
 
-    context.log.info("Running ebay_de_raw_to_bronze and ebay_uk_raw_to_bronze in parallel...")
+    context.log.info("Running ebay_de_raw_to_bronze, ebay_uk_raw_to_bronze, exchange_rates_job in parallel...")
     result_de = job_def_de.execute_in_process(instance=context.instance)
     result_uk = job_def_uk.execute_in_process(instance=context.instance)
+    result_rates = job_def_rates.execute_in_process(instance=context.instance)
 
-    context.log.info(f"bronze complete, de_run_id={result_de.run_id}, uk_run_id={result_uk.run_id}")
+    context.log.info(
+        f"bronze complete, de_run_id={result_de.run_id}, "
+        f"uk_run_id={result_uk.run_id}, rates_run_id={result_rates.run_id}"
+    )
     return dg.MaterializeResult(metadata={
         "de_run_id": result_de.run_id,
         "uk_run_id": result_uk.run_id,
+        "rates_run_id": result_rates.run_id,
     })
 
 
