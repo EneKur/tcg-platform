@@ -142,6 +142,15 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 - **14 `failed_card_ids` from `sync_card_images`** — CDN gaps on the Limitless side; no fix in this codebase. Outstanding.
 - **M5-T2 deferred work** — Dagster schedules (daily full refresh + hourly incremental) never implemented. Still deferred.
 
+### Milestone 9: Persistent Raw Layer (M9)
+> **M9-T1 COMPLETE:** `tcg-raw` MinIO bucket holds raw HTML + images + per-run logs. Replay the transformer against `tcg-raw` to fix a parser without re-paying Zyte API costs. See `docs/superpowers/specs/2026-06-11-tcg-raw-layer-design.md` and `log/SESSION_2026-06-11.md`.
+
+- [x] **M9-T1** — tcg-raw bucket, scraper split into network-only + offline transformer, one-time backfill for pre-existing rows.
+
+#### Operational notes
+
+- **MinIO clock skew will break the pipeline with `RequestTimeTooSkewed`.** Podman containers drift when the host sleeps/resumes. The S3 SDK rejects requests where local/server skew > ~15 min, and the failure is loud only at the resource init step (no pre-flight check). Run `bash scripts/check_minio_clock.sh` before launching `complete_eu_pipeline`; it's also wired into `pytest` as `tests/test_minio_clock_skew.py` (FAIL fails the suite, WARN emits a warning, SKIP if MinIO is unreachable).
+
 ---
 
 ## Auth Folder Structure
