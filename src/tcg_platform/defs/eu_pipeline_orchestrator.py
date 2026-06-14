@@ -5,27 +5,43 @@ from dagster import AssetKey
 @dg.asset
 def bronze_eu_orchestrator(context: dg.AssetExecutionContext):
     """Triggers ebay_de, ebay_uk scrapes and exchange_rates backfill in parallel."""
+    import concurrent.futures
+    from typing import Any
+
     from tcg_platform.definitions import defs
+
     context.log.info("Starting bronze_eu_orchestrator")
     resolved = defs.load_fn()
 
-    job_def_de = resolved.resolve_job_def("ebay_de_raw_to_bronze")
-    job_def_uk = resolved.resolve_job_def("ebay_uk_raw_to_bronze")
+    job_def_de    = resolved.resolve_job_def("ebay_de_raw_to_bronze")
+    job_def_uk    = resolved.resolve_job_def("ebay_uk_raw_to_bronze")
     job_def_rates = resolved.resolve_job_def("exchange_rates_job")
 
     context.log.info("Running ebay_de_raw_to_bronze, ebay_uk_raw_to_bronze, exchange_rates_job in parallel...")
-    result_de = job_def_de.execute_in_process(instance=context.instance)
-    result_uk = job_def_uk.execute_in_process(instance=context.instance)
-    result_rates = job_def_rates.execute_in_process(instance=context.instance)
 
-    context.log.info(
-        f"bronze complete, de_run_id={result_de.run_id}, "
-        f"uk_run_id={result_uk.run_id}, rates_run_id={result_rates.run_id}"
-    )
+    sub_jobs = {
+        "de":    job_def_de.execute_in_process,
+        "uk":    job_def_uk.execute_in_process,
+        "rates": job_def_rates.execute_in_process,
+    }
+
+    results: dict[str, Any] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="eu-bronze") as ex:
+        futures = {ex.submit(fn, instance=context.instance): name for name, fn in sub_jobs.items()}
+        for fut in concurrent.futures.as_completed(futures):
+            name = futures[fut]
+            try:
+                r = fut.result()
+            except Exception as e:
+                context.log.error(f"{name} sub-job failed: {e}")
+                raise
+            results[name] = r
+            context.log.info(f"{name} sub-job complete, run_id={r.run_id}")
+
     return dg.MaterializeResult(metadata={
-        "de_run_id": result_de.run_id,
-        "uk_run_id": result_uk.run_id,
-        "rates_run_id": result_rates.run_id,
+        "de_run_id":    results["de"].run_id,
+        "uk_run_id":    results["uk"].run_id,
+        "rates_run_id": results["rates"].run_id,
     })
 
 
