@@ -150,6 +150,7 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 #### Operational notes
 
 - **MinIO clock skew will break the pipeline with `RequestTimeTooSkewed`.** Podman containers drift when the host sleeps/resumes. The S3 SDK rejects requests where local/server skew > ~15 min, and the failure is loud only at the resource init step (no pre-flight check). Run `bash scripts/check_minio_clock.sh` before launching `complete_eu_pipeline`; it's also wired into `pytest` as `tests/test_minio_clock_skew.py` (FAIL fails the suite, WARN emits a warning, SKIP if MinIO is unreachable).
+- **A hung Zyte request will block the scraper forever** (no per-call timeout in the Zyte SDK by default). Symptom: the `scrape_ebay_*_raw` step shows no log output for tens of minutes; `lsof -p <pid>` shows an `ESTABLISHED` TCP to `69.41.180.81:443`. Fixed in PR #20: `ZyteSessionResource` now creates a shared `aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=ZYTE_API_TIMEOUT))` (default 120s, override via env). When the timeout fires, `asyncio.TimeoutError` triggers the existing retry + key-rotation logic, so a hung key #1 is followed by key #2.
 
 ---
 
