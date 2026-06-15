@@ -6,7 +6,7 @@ import aiohttp
 from dagster import resource
 from dagster._config.pythonic_config.resource import InitResourceContext
 
-from zyte_api import ZyteAPI
+from zyte_api import ZyteAPI, RequestError
 
 TRANSIENT_ERRORS = (
     ConnectionError,
@@ -32,6 +32,7 @@ class ZyteSessionResource:
         self._api_timeout = api_timeout
         self._session: "aiohttp.ClientSession | None" = None
         self._retry_stats: dict[str, int] = {}
+        self._dead_keys: set[int] = set()
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -44,7 +45,11 @@ class ZyteSessionResource:
         last_error = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = client.get(request, session=self._get_session())
+                response = client.get(
+                    request,
+                    session=self._get_session(),
+                    handle_retries=False,
+                )
                 status = response.get("statusCode", 0)
                 if status >= 500 or status == 429:
                     raise ConnectionError(f"Transient status {status}")
@@ -65,11 +70,15 @@ class ZyteSessionResource:
         tried_keys: list[str] = []
 
         for i, client in enumerate(self._clients):
+            if i in self._dead_keys:
+                continue
             key_name = self._key_names[i]
             tried_keys.append(key_name)
             try:
                 return self._try_get(client, request)
-            except Exception:
+            except Exception as e:
+                if isinstance(e, RequestError) and getattr(e, "status", None) == 402:
+                    self._dead_keys.add(i)
                 continue
 
         tried = ", ".join(tried_keys)
@@ -106,13 +115,13 @@ class ZyteSessionResource:
 def _read_api_keys() -> list[str]:
     keys: list[str] = []
     for i in range(1, 100):
-        key = os.getenv(f"ZYTE_API_KEY{i if i > 1 else ''}")
+        key = os.getenv(f"ZYTE_API_KEY{i}")
         if key:
             keys.append(key)
     if not keys:
         raise ValueError(
             "No ZYTE_API_KEY environment variable(s) set. "
-            "Add ZYTE_API_KEY (or ZYTE_API_KEY1, ZYTE_API_KEY2, ...) to .env"
+            "Add ZYTE_API_KEY1, ZYTE_API_KEY2, ... to .env"
         )
     return keys
 

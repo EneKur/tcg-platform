@@ -205,6 +205,106 @@ class TestZyteSessionResource:
             except Exception:
                 pass
 
+    def test_read_api_keys_picks_up_zyte_api_key1(self, monkeypatch):
+        """Regression: ZYTE_API_KEY1 in .env was being silently ignored because
+        the loop read ZYTE_API_KEY (no suffix) for i=1. With three Zyte keys
+        configured, all three must be loaded — losing one means burning through
+        two instead of three before 'all exhausted' is raised.
+        """
+        monkeypatch.setenv("ZYTE_API_KEY1", "k1")
+        monkeypatch.delenv("ZYTE_API_KEY", raising=False)
+        monkeypatch.setenv("ZYTE_API_KEY2", "k2")
+        monkeypatch.setenv("ZYTE_API_KEY3", "k3")
+        monkeypatch.delenv("ZYTE_API_KEY4", raising=False)
+
+        from tcg_platform.defs.zyte_resources import _read_api_keys
+        keys = _read_api_keys()
+        assert keys == ["k1", "k2", "k3"]
+
+    def test_402_passes_handle_retries_false_to_zyteapi(self):
+        """A 402 'over-user-limit' from Zyte means the key is dead for the
+        month. ZyteAPI's default retry policy retries 402 internally twice
+        (x402_error_stop: stop_on_count(2)) before raising. On a dead-for-
+        the-month key, those internal retries waste monthly quota budget
+        and add latency for no benefit. We pass handle_retries=False to
+        client.get() so the wrapper (not ZyteAPI) owns retry/rotation
+        decisions.
+        """
+        from zyte_api import RequestError
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession") as MockSession:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            MockSession.return_value = mock_session
+
+            live_key = MagicMock()
+            live_key.get = MagicMock(
+                return_value={"statusCode": 200, "browserHtml": "<html/>"}
+            )
+            MockZyteAPI.return_value = live_key
+
+            resource = ZyteSessionResource(
+                api_keys=["live"], max_retries=3
+            )
+            resource.get({"url": "https://example.com"})
+
+            assert live_key.get.call_count == 1
+            call_kwargs = live_key.get.call_args.kwargs
+            assert call_kwargs.get("handle_retries") is False, (
+                f"client.get() must be called with handle_retries=False to "
+                f"prevent ZyteAPI from wasting internal retries on dead keys; "
+                f"got kwargs={call_kwargs}"
+            )
+
+    def test_key_402d_earlier_is_not_retried_again_this_run(self):
+        """Once a key returns 402 ('dead for the month'), subsequent calls in
+        the same process must skip it entirely. Otherwise we waste monthly
+        quota budget on a key that will never succeed this month.
+        """
+        from zyte_api import RequestError
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession") as MockSession:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            MockSession.return_value = mock_session
+
+            dead_key = MagicMock()
+            dead_key.get = MagicMock(
+                side_effect=RequestError(
+                    request_info=MagicMock(),
+                    history=(),
+                    status=402,
+                    message="Payment Required",
+                    headers={},
+                    response_content=b'{"error":"limits/over-user-limit"}',
+                    query={"url": "https://example.com"},
+                )
+            )
+
+            live_key = MagicMock()
+            live_key.get = MagicMock(
+                return_value={"statusCode": 200, "browserHtml": "<html/>"}
+            )
+
+            def side_effect(**kwargs):
+                return dead_key if kwargs.get("api_key") == "dead" else live_key
+            MockZyteAPI.side_effect = side_effect
+
+            resource = ZyteSessionResource(
+                api_keys=["dead", "live"], max_retries=3
+            )
+
+            result1 = resource.get({"url": "https://example.com/a"})
+            assert result1 == {"statusCode": 200, "browserHtml": "<html/>"}
+            assert dead_key.get.call_count == 1
+
+            result2 = resource.get({"url": "https://example.com/b"})
+            assert result2 == {"statusCode": 200, "browserHtml": "<html/>"}
+            assert dead_key.get.call_count == 1, (
+                "Dead-for-the-month key must not be retried in same process; "
+                f"was called {dead_key.get.call_count} times across two get() calls"
+            )
+
     def test_session_has_configured_timeout(self, monkeypatch):
         """The shared aiohttp.ClientSession MUST be created with timeout=<configured>."""
         import aiohttp
