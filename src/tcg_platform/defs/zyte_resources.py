@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import os
 import time
 
@@ -33,6 +34,15 @@ class ZyteSessionResource:
         self._session: "aiohttp.ClientSession | None" = None
         self._retry_stats: dict[str, int] = {}
         self._dead_keys: set[int] = set()
+        # Bounded thread pool for the hard per-call timeout. Each Zyte call
+        # is submitted here and we apply a hard Python-level deadline via
+        # future.result(timeout=...). Threads that overrun keep running in
+        # the background (Python can't force-kill threads) but the caller
+        # gets control back. The pool is bounded so we don't accumulate
+        # infinite zombie threads if Zyte keeps hanging.
+        self._call_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="zyte-call"
+        )
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -55,15 +65,51 @@ class ZyteSessionResource:
         last_error = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = client.get(
+                future = self._call_executor.submit(
+                    client.get,
                     request,
                     session=self._get_session(),
                     handle_retries=False,
                 )
+                # Hard Python-level deadline. Independent of aiohttp's
+                # ClientTimeout, which can fail to fire inside
+                # loop.run_until_complete (no current task / cross-loop).
+                response = future.result(timeout=self._api_timeout)
                 status = response.get("statusCode", 0)
                 if status >= 500 or status == 429:
                     raise ConnectionError(f"Transient status {status}")
                 return response
+            except concurrent.futures.TimeoutError as e:
+                last_error = TimeoutError(
+                    f"Zyte call exceeded hard timeout of {self._api_timeout}s"
+                )
+                if attempt < self._max_retries:
+                    self._retry_stats["retries_attempted"] = (
+                        self._retry_stats.get("retries_attempted", 0) + 1
+                    )
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise last_error from e
+            except RuntimeError as e:
+                # aiohttp 3.13 raises RuntimeError("Timeout context manager
+                # should be used inside a task") when the session's timeout
+                # is engaged on a loop that has no current task. This is
+                # the failure mode the per-call aiohttp ClientTimeout can't
+                # handle — it's effectively a timeout on the request. Treat
+                # it the same as a hard timeout so we don't keep retrying
+                # the same broken request and so the outer rotation kicks in.
+                if "Timeout context manager" in str(e):
+                    last_error = TimeoutError(
+                        f"Zyte call timed out (aiohttp cross-loop bug): {e}"
+                    )
+                    if attempt < self._max_retries:
+                        self._retry_stats["retries_attempted"] = (
+                            self._retry_stats.get("retries_attempted", 0) + 1
+                        )
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    raise last_error from e
+                raise
             except TRANSIENT_ERRORS as e:
                 last_error = e
                 if attempt < self._max_retries:
@@ -78,6 +124,7 @@ class ZyteSessionResource:
     def get(self, request: dict) -> dict:
         self._retry_stats = {"retries_attempted": 0}
         tried_keys: list[str] = []
+        last_was_timeout = False
 
         for i, client in enumerate(self._clients):
             if i in self._dead_keys:
@@ -87,11 +134,31 @@ class ZyteSessionResource:
             try:
                 return self._try_get(client, request)
             except Exception as e:
+                # A hard timeout (either the future.result() timeout OR
+                # the aiohttp cross-loop RuntimeError surfaced as a
+                # TimeoutError by _try_get) means Zyte is unresponsive for
+                # that key right now. Rotate to the next key (just like a
+                # 402 quota error). Marking the key "dead" for the rest of
+                # the run avoids spending the full timeout on every retry
+                # attempt for a key that's clearly stuck.
+                if isinstance(e, TimeoutError) and (
+                    "exceeded hard timeout" in str(e)
+                    or "cross-loop bug" in str(e)
+                ):
+                    self._dead_keys.add(i)
+                    last_was_timeout = True
+                    continue
                 if isinstance(e, RequestError) and getattr(e, "status", None) == 402:
                     self._dead_keys.add(i)
                 continue
 
         tried = ", ".join(tried_keys)
+        if last_was_timeout:
+            # Surface the real cause: Zyte was unresponsive, not quota-exhausted.
+            raise RuntimeError(
+                f"All Zyte API keys timed out ({tried}) at hard_timeout={self._api_timeout}s. "
+                "Zyte may be unresponsive or the network is dropping packets."
+            )
         raise RuntimeError(
             f"All Zyte API keys exhausted ({tried}). "
             "Check rate limits or add more keys to .env as ZYTE_API_KEY3, etc."
