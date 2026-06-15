@@ -36,9 +36,19 @@ class ZyteSessionResource:
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self._api_timeout)
-            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is None or loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            timeout = aiohttp.ClientTimeout(total=self._api_timeout)
+
+            async def _make_session() -> aiohttp.ClientSession:
+                return aiohttp.ClientSession(timeout=timeout)
+
+            self._session = loop.run_until_complete(_make_session())
         return self._session
 
     def _try_get(self, client: ZyteAPI, request: dict) -> dict:

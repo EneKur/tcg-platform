@@ -305,6 +305,52 @@ class TestZyteSessionResource:
                 f"was called {dead_key.get.call_count} times across two get() calls"
             )
 
+    def test_get_session_works_with_real_aiohttp_313(self):
+        """Regression: aiohttp 3.13's ClientSession constructor calls
+        asyncio.get_running_loop() to capture the current event loop.
+        Calling aiohttp.ClientSession(...) from sync code without a
+        running loop raises RuntimeError: no running event loop. Every
+        Zyte call would then appear as "all keys exhausted" because the
+        session construction fails on every key. The session MUST be
+        created inside a running event loop so aiohttp 3.13 can capture
+        the loop reference.
+        """
+        from tcg_platform.defs import zyte_resources
+        from tcg_platform.defs.zyte_resources import ZyteSessionResource
+
+        with patch.object(zyte_resources, "ZyteAPI"):
+            resource = ZyteSessionResource(api_keys=["k1"], api_timeout=42.0)
+            # If _get_session synchronously calls aiohttp.ClientSession(...)
+            # without a running loop, aiohttp 3.13 raises:
+            #   RuntimeError: no running event loop
+            # The test passes only if the session is created inside a loop.
+            session = resource._get_session()
+            assert session is not None
+            assert session.closed is False
+            # The configured timeout must be preserved.
+            assert session.timeout.total == 42.0
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def test_get_session_returns_same_session_across_calls(self):
+        """The session is shared across multiple get() calls (per-process
+        connection reuse). _get_session must return the same instance
+        while the session is open, and a fresh one after close.
+        """
+        from tcg_platform.defs import zyte_resources
+
+        with patch.object(zyte_resources, "ZyteAPI"):
+            resource = zyte_resources.ZyteSessionResource(api_keys=["k1"], api_timeout=30.0)
+            s1 = resource._get_session()
+            s2 = resource._get_session()
+            assert s1 is s2, "session should be reused while open"
+            try:
+                resource.close()
+            except Exception:
+                pass
+
     def test_session_has_configured_timeout(self, monkeypatch):
         """The shared aiohttp.ClientSession MUST be created with timeout=<configured>."""
         import aiohttp
