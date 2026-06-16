@@ -1,11 +1,104 @@
-import pytest
-import os
+"""Tests for ZyteSessionResource — single-key model (2026-06-16 redesign).
+
+Pre-PR history: the resource used to rotate across ZYTE_API_KEY1..N, mark
+dead keys after 402, and surface a single "All Zyte API keys exhausted"
+or "All Zyte API keys timed out" message. The operator now provides a
+single ZYTE_API_KEY managed externally; rotation is gone. Each failure
+mode (4xx, 5xx, hard timeout, aiohttp cross-loop) is now a distinct
+exception class so the operator can see the real cause.
+"""
+import asyncio
+import time
 from unittest.mock import patch, MagicMock
 
-from tcg_platform.defs.zyte_resources import ZyteSessionResource
+import pytest
+
+from tcg_platform.defs.zyte_resources import (
+    ZyteSessionResource,
+    ZyteTimeoutError,
+    ZyteRequestError,
+    ZyteServerError,
+    ZyteCrossLoopError,
+    _read_api_key,
+)
 
 
-class TestZyteSessionResource:
+class TestZyteSessionResourceSingleKey:
+    """The single-key contract."""
+
+    def test_constructor_accepts_single_api_key(self):
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession"):
+            resource = ZyteSessionResource(api_key="test-key-123")
+            assert resource is not None
+            MockZyteAPI.assert_called_once()
+
+    def test_constructor_rejects_api_keys_list(self):
+        """The old plural `api_keys=[...]` argument is gone. A TypeError on
+        the constructor surfaces the rename loudly at first use rather than
+        silently being treated as a 1-element list."""
+        with pytest.raises(TypeError):
+            ZyteSessionResource(api_keys=["test-key-123"])
+
+    def test_get_session_works_with_real_aiohttp_313(self):
+        """Regression: aiohttp 3.13's ClientSession constructor requires
+        a running event loop. The session MUST be created inside a loop
+        so aiohttp 3.13 can capture the loop reference.
+        """
+        from tcg_platform.defs import zyte_resources
+
+        with patch.object(zyte_resources, "ZyteAPI"):
+            resource = ZyteSessionResource(api_key="k1", api_timeout=42.0)
+            session = resource._get_session()
+            assert session is not None
+            assert session.closed is False
+            assert session.timeout.total == 42.0
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def test_get_session_returns_same_session_across_calls(self):
+        """The session is shared across multiple get() calls (per-process
+        connection reuse).
+        """
+        from tcg_platform.defs import zyte_resources
+
+        with patch.object(zyte_resources, "ZyteAPI"):
+            resource = zyte_resources.ZyteSessionResource(api_key="k1", api_timeout=30.0)
+            s1 = resource._get_session()
+            s2 = resource._get_session()
+            assert s1 is s2, "session should be reused while open"
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def test_session_has_configured_timeout(self, monkeypatch):
+        """The shared aiohttp.ClientSession MUST be created with timeout=<configured>."""
+        import aiohttp
+        from tcg_platform.defs import zyte_resources
+
+        captured_kwargs: dict = {}
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                captured_kwargs.update(kwargs)
+                self.closed = True
+
+        monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+        with patch.object(zyte_resources, "ZyteAPI"):
+            resource = zyte_resources.ZyteSessionResource(
+                api_key="key1", api_timeout=42.0
+            )
+            resource._get_session()
+        assert "timeout" in captured_kwargs, f"ClientSession kwargs={captured_kwargs}"
+        assert captured_kwargs["timeout"].total == 42.0
+
+
+class TestZyteSessionResourceSuccess:
+    """Happy path: retry on transient errors, return the response."""
+
     def test_retry_on_transient_connection_error(self, monkeypatch):
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession") as MockSession:
@@ -25,66 +118,10 @@ class TestZyteSessionResource:
             mock_client.get = failing_get
             MockZyteAPI.return_value = mock_client
 
-            resource = ZyteSessionResource(api_keys=["test-key-123"], n_conn=2)
+            resource = ZyteSessionResource(api_key="test-key-123", n_conn=2)
             result = resource.get({"url": "https://example.com"})
             assert result == {"statusCode": 200, "browserHtml": "<html/>"}
             assert call_count[0] == 3
-
-    def test_no_retry_on_4xx(self, monkeypatch):
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
-            mock_client = MagicMock()
-            mock_client.get = MagicMock(return_value={"statusCode": 403, "browserHtml": ""})
-            MockZyteAPI.return_value = mock_client
-
-            resource = ZyteSessionResource(api_keys=["test-key-123"])
-            result = resource.get({"url": "https://example.com"})
-            assert result["statusCode"] == 403
-            assert mock_client.get.call_count == 1
-
-    def test_no_retry_on_500(self, monkeypatch):
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
-            mock_client = MagicMock()
-            call_count = [0]
-
-            def failing_get(*args, **kwargs):
-                call_count[0] += 1
-                if call_count[0] < 2:
-                    raise ConnectionError("server error")
-                return {"statusCode": 200, "browserHtml": "<html/>"}
-
-            mock_client.get = failing_get
-            MockZyteAPI.return_value = mock_client
-
-            resource = ZyteSessionResource(api_keys=["test-key-123"], max_retries=3)
-            result = resource.get({"url": "https://example.com"})
-            assert result == {"statusCode": 200, "browserHtml": "<html/>"}
-            assert call_count[0] == 2
-
-    def test_max_retries_respected(self, monkeypatch):
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
-            mock_client = MagicMock()
-            mock_client.get = MagicMock(side_effect=ConnectionError("always fails"))
-            MockZyteAPI.return_value = mock_client
-
-            resource = ZyteSessionResource(api_keys=["test-key-123"], max_retries=1)
-            with pytest.raises(RuntimeError, match="All Zyte API keys exhausted"):
-                resource.get({"url": "https://example.com"})
-            assert mock_client.get.call_count == 2
 
     def test_retry_stats_tracked(self, monkeypatch):
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
@@ -105,49 +142,38 @@ class TestZyteSessionResource:
             mock_client.get = failing_get
             MockZyteAPI.return_value = mock_client
 
-            resource = ZyteSessionResource(api_keys=["test-key-123"])
+            resource = ZyteSessionResource(api_key="test-key-123")
             resource.get({"url": "https://example.com"})
             stats = resource.get_retry_stats()
             assert stats["retries_attempted"] == 2
 
-    def test_key_rotation_on_exhausted_retries(self, monkeypatch):
+    def test_5xx_triggers_retry_then_success(self, monkeypatch):
+        """A 5xx from Zyte is transient — retry, then succeed."""
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession") as MockSession:
             mock_session = MagicMock()
             mock_session.closed = False
             MockSession.return_value = mock_session
 
-            mock_client_1 = MagicMock()
-            mock_client_1.get = MagicMock(side_effect=ConnectionError("key1 exhausted"))
+            mock_client = MagicMock()
+            call_count = [0]
 
-            mock_client_2 = MagicMock()
-            call_count_2 = [0]
-
-            def key2_get(*args, **kwargs):
-                call_count_2[0] += 1
-                if call_count_2[0] < 2:
-                    raise ConnectionError("transient")
+            def failing_get(*args, **kwargs):
+                call_count[0] += 1
+                if call_count[0] < 2:
+                    return {"statusCode": 500, "browserHtml": ""}
                 return {"statusCode": 200, "browserHtml": "<html/>"}
 
-            mock_client_2.get = key2_get
+            mock_client.get = failing_get
+            MockZyteAPI.return_value = mock_client
 
-            def side_effect(**kwargs):
-                key = kwargs.get("api_key")
-                if key == "key1":
-                    return mock_client_1
-                return mock_client_2
-
-            MockZyteAPI.side_effect = side_effect
-
-            resource = ZyteSessionResource(
-                api_keys=["key1", "key2"], max_retries=3
-            )
+            resource = ZyteSessionResource(api_key="test-key-123", max_retries=3)
             result = resource.get({"url": "https://example.com"})
             assert result == {"statusCode": 200, "browserHtml": "<html/>"}
-            assert mock_client_1.get.call_count == 4
-            assert call_count_2[0] == 2
+            assert call_count[0] == 2
 
-    def test_all_keys_exhausted_raises(self, monkeypatch):
+    def test_429_triggers_retry(self, monkeypatch):
+        """429 (rate-limited) is transient — retry."""
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession") as MockSession:
             mock_session = MagicMock()
@@ -155,151 +181,25 @@ class TestZyteSessionResource:
             MockSession.return_value = mock_session
 
             mock_client = MagicMock()
-            mock_client.get = MagicMock(side_effect=ConnectionError("always fails"))
+            call_count = [0]
+
+            def failing_get(*args, **kwargs):
+                call_count[0] += 1
+                if call_count[0] < 2:
+                    return {"statusCode": 429, "browserHtml": ""}
+                return {"statusCode": 200, "browserHtml": "<html/>"}
+
+            mock_client.get = failing_get
             MockZyteAPI.return_value = mock_client
 
-            resource = ZyteSessionResource(
-                api_keys=["key1", "key2"], max_retries=1
-            )
-            with pytest.raises(RuntimeError, match="All Zyte API keys exhausted"):
-                resource.get({"url": "https://example.com"})
-
-    def test_key_rotation_on_timeout(self):
-        """A hung Zyte key MUST rotate to key #2 once the per-key retries
-        are exhausted, with the hard timeout surfacing the cause.
-
-        Regression test for the 2026-06-14 eBay UK hang: a single Zyte
-        request that doesn't respond would previously block the scraper
-        forever because no exception was raised. With a per-call hard
-        timeout, the call is aborted and the next key is tried.
-        """
-        import asyncio
-        import aiohttp
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
-            mock_client_1 = MagicMock()
-            mock_client_1.get = MagicMock(side_effect=asyncio.TimeoutError("hung"))
-
-            mock_client_2 = MagicMock()
-            mock_client_2.get = MagicMock(
-                return_value={"statusCode": 200, "browserHtml": "<html/>"}
-            )
-
-            def side_effect(**kwargs):
-                return mock_client_1 if kwargs.get("api_key") == "key1" else mock_client_2
-            MockZyteAPI.side_effect = side_effect
-
-            resource = ZyteSessionResource(
-                api_keys=["key1", "key2"], max_retries=2, api_timeout=10.0
-            )
+            resource = ZyteSessionResource(api_key="test-key-123", max_retries=3)
             result = resource.get({"url": "https://example.com"})
-            assert result == {"statusCode": 200, "browserHtml": "<html/>"}
-            # key1 was tried max_retries+1=3 times (all timeout), then rotated
-            # to key2, which returned 200. (Previously the test asserted 2
-            # calls to key1; with the per-call hard timeout the retry path
-            # uses future.result(timeout=...) so the same number of attempts
-            # is still expected.)
-            assert mock_client_1.get.call_count == 3, (
-                f"key1 should be tried max_retries+1=3 times before rotation, "
-                f"got {mock_client_1.get.call_count}"
-            )
-            assert mock_client_2.get.call_count == 1
-            try:
-                resource.close()
-            except Exception:
-                pass
+            assert result["statusCode"] == 200
 
-    def test_aiohttp_cross_loop_runtime_error_treated_as_timeout(self):
-        """aiohttp 3.13 raises RuntimeError('Timeout context manager should be
-        used inside a task') when the session's timeout is engaged on a loop
-        that has no current task. This is a different code path from a true
-        network hang but the practical effect is the same: the call cannot
-        complete. Without special handling, this RuntimeError would be
-        treated as a generic key failure (and retry forever). It must be
-        treated as a timeout so the rotation logic kicks in.
+    def test_handle_retries_false_passed_to_zyteapi(self, monkeypatch):
+        """The Zyte SDK's internal retry policy wastes budget on dead keys.
+        We pass handle_retries=False so our wrapper owns retry decisions.
         """
-        from tcg_platform.defs import zyte_resources
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession"):
-            mock_client = MagicMock()
-            mock_client.get = MagicMock(
-                side_effect=RuntimeError("Timeout context manager should be used inside a task")
-            )
-            MockZyteAPI.return_value = mock_client
-
-            resource = ZyteSessionResource(
-                api_keys=["k1"], max_retries=0, api_timeout=10.0
-            )
-            with pytest.raises(RuntimeError) as exc_info:
-                resource.get({"url": "https://example.com"})
-            msg = str(exc_info.value)
-            # The error must indicate timeout (either "timed out" or "cross-loop")
-            # so the user can diagnose a Zyte availability issue, not quota.
-            assert "timed out" in msg or "cross-loop" in msg, (
-                f"aiohttp cross-loop RuntimeError should be reported as a "
-                f"timeout; got: {msg[:200]}"
-            )
-
-    def test_all_keys_timed_out_surfaces_timeout_error(self):
-        """When every Zyte key times out (hard timeout exceeded), the final
-        error message must say so explicitly. The original 2026-06-14 UK hang
-        surfaced as 'All Zyte API keys exhausted' which masked the real
-        cause (Zyte was unresponsive, not quota-exhausted).
-        """
-        import asyncio
-        from tcg_platform.defs import zyte_resources
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
-            mock_client = MagicMock()
-            mock_client.get = MagicMock(side_effect=asyncio.TimeoutError("hung"))
-            MockZyteAPI.return_value = mock_client
-
-            resource = ZyteSessionResource(
-                api_keys=["k1", "k2"], max_retries=0, api_timeout=5.0
-            )
-            with pytest.raises(RuntimeError) as exc_info:
-                resource.get({"url": "https://example.com"})
-            msg = str(exc_info.value)
-            assert "timed out" in msg, f"expected 'timed out' in error, got: {msg[:200]}"
-            assert "exhausted" not in msg, (
-                f"timeout error was wrapped as 'exhausted' — the real cause "
-                f"is hidden. msg: {msg[:200]}"
-            )
-
-    def test_read_api_keys_picks_up_zyte_api_key1(self, monkeypatch):
-        """Regression: ZYTE_API_KEY1 in .env was being silently ignored because
-        the loop read ZYTE_API_KEY (no suffix) for i=1. With three Zyte keys
-        configured, all three must be loaded — losing one means burning through
-        two instead of three before 'all exhausted' is raised.
-        """
-        monkeypatch.setenv("ZYTE_API_KEY1", "k1")
-        monkeypatch.delenv("ZYTE_API_KEY", raising=False)
-        monkeypatch.setenv("ZYTE_API_KEY2", "k2")
-        monkeypatch.setenv("ZYTE_API_KEY3", "k3")
-        monkeypatch.delenv("ZYTE_API_KEY4", raising=False)
-
-        from tcg_platform.defs.zyte_resources import _read_api_keys
-        keys = _read_api_keys()
-        assert keys == ["k1", "k2", "k3"]
-
-    def test_402_passes_handle_retries_false_to_zyteapi(self):
-        """A 402 'over-user-limit' from Zyte means the key is dead for the
-        month. ZyteAPI's default retry policy retries 402 internally twice
-        (x402_error_stop: stop_on_count(2)) before raising. On a dead-for-
-        the-month key, those internal retries waste monthly quota budget
-        and add latency for no benefit. We pass handle_retries=False to
-        client.get() so the wrapper (not ZyteAPI) owns retry/rotation
-        decisions.
-        """
-        from zyte_api import RequestError
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession") as MockSession:
             mock_session = MagicMock()
@@ -312,125 +212,124 @@ class TestZyteSessionResource:
             )
             MockZyteAPI.return_value = live_key
 
-            resource = ZyteSessionResource(
-                api_keys=["live"], max_retries=3
-            )
+            resource = ZyteSessionResource(api_key="live", max_retries=3)
             resource.get({"url": "https://example.com"})
 
             assert live_key.get.call_count == 1
             call_kwargs = live_key.get.call_args.kwargs
             assert call_kwargs.get("handle_retries") is False, (
-                f"client.get() must be called with handle_retries=False to "
-                f"prevent ZyteAPI from wasting internal retries on dead keys; "
+                f"client.get() must be called with handle_retries=False; "
                 f"got kwargs={call_kwargs}"
             )
 
-    def test_key_402d_earlier_is_not_retried_again_this_run(self):
-        """Once a key returns 402 ('dead for the month'), subsequent calls in
-        the same process must skip it entirely. Otherwise we waste monthly
-        quota budget on a key that will never succeed this month.
+
+class TestZyteSessionResourceFailureModes:
+    """Each failure mode must surface as a distinct, named exception."""
+
+    def test_4xx_surfaces_as_zyte_request_error_with_status(self, monkeypatch):
+        """A 4xx from Zyte is NOT a timeout. It is a 4xx. Surface as
+        ZyteRequestError with the real status code attached.
         """
-        from zyte_api import RequestError
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession") as MockSession:
             mock_session = MagicMock()
             mock_session.closed = False
             MockSession.return_value = mock_session
 
-            dead_key = MagicMock()
-            dead_key.get = MagicMock(
-                side_effect=RequestError(
-                    request_info=MagicMock(),
-                    history=(),
-                    status=402,
-                    message="Payment Required",
-                    headers={},
-                    response_content=b'{"error":"limits/over-user-limit"}',
-                    query={"url": "https://example.com"},
-                )
+            mock_client = MagicMock()
+            mock_client.get = MagicMock(
+                return_value={"statusCode": 403, "browserHtml": ""}
             )
+            MockZyteAPI.return_value = mock_client
 
-            live_key = MagicMock()
-            live_key.get = MagicMock(
-                return_value={"statusCode": 200, "browserHtml": "<html/>"}
+            resource = ZyteSessionResource(api_key="k1", max_retries=3)
+            with pytest.raises(ZyteRequestError) as exc_info:
+                resource.get({"url": "https://example.com"})
+            assert exc_info.value.status == 403
+
+    def test_4xx_no_retry(self, monkeypatch):
+        """A 4xx is final — don't retry it, don't wait for timeouts."""
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession") as MockSession:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            MockSession.return_value = mock_session
+
+            mock_client = MagicMock()
+            mock_client.get = MagicMock(
+                return_value={"statusCode": 401, "browserHtml": ""}
             )
+            MockZyteAPI.return_value = mock_client
 
-            def side_effect(**kwargs):
-                return dead_key if kwargs.get("api_key") == "dead" else live_key
-            MockZyteAPI.side_effect = side_effect
+            resource = ZyteSessionResource(api_key="k1", max_retries=3)
+            with pytest.raises(ZyteRequestError):
+                resource.get({"url": "https://example.com"})
+            assert mock_client.get.call_count == 1
 
-            resource = ZyteSessionResource(
-                api_keys=["dead", "live"], max_retries=3
+    def test_5xx_after_retries_surfaces_as_zyte_server_error(self, monkeypatch):
+        """A 5xx that persists across all retries is reported as ZyteServerError."""
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession") as MockSession:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            MockSession.return_value = mock_session
+
+            mock_client = MagicMock()
+            mock_client.get = MagicMock(
+                return_value={"statusCode": 503, "browserHtml": ""}
             )
+            MockZyteAPI.return_value = mock_client
 
-            result1 = resource.get({"url": "https://example.com/a"})
-            assert result1 == {"statusCode": 200, "browserHtml": "<html/>"}
-            assert dead_key.get.call_count == 1
+            resource = ZyteSessionResource(api_key="k1", max_retries=1)
+            with pytest.raises(ZyteServerError) as exc_info:
+                resource.get({"url": "https://example.com"})
+            assert exc_info.value.status == 503
+            # max_retries=1 → 2 total attempts.
+            assert mock_client.get.call_count == 2
 
-            result2 = resource.get({"url": "https://example.com/b"})
-            assert result2 == {"statusCode": 200, "browserHtml": "<html/>"}
-            assert dead_key.get.call_count == 1, (
-                "Dead-for-the-month key must not be retried in same process; "
-                f"was called {dead_key.get.call_count} times across two get() calls"
-            )
-
-    def test_get_session_works_with_real_aiohttp_313(self):
-        """Regression: aiohttp 3.13's ClientSession constructor calls
-        asyncio.get_running_loop() to capture the current event loop.
-        Calling aiohttp.ClientSession(...) from sync code without a
-        running loop raises RuntimeError: no running event loop. Every
-        Zyte call would then appear as "all keys exhausted" because the
-        session construction fails on every key. The session MUST be
-        created inside a running event loop so aiohttp 3.13 can capture
-        the loop reference.
+    def test_max_retries_respected(self, monkeypatch):
+        """A persistent transient error (e.g. ConnectionError) raises
+        ZyteServerError after max_retries+1 attempts.
         """
-        from tcg_platform.defs import zyte_resources
-        from tcg_platform.defs.zyte_resources import ZyteSessionResource
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession") as MockSession:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            MockSession.return_value = mock_session
 
-        with patch.object(zyte_resources, "ZyteAPI"):
-            resource = ZyteSessionResource(api_keys=["k1"], api_timeout=42.0)
-            # If _get_session synchronously calls aiohttp.ClientSession(...)
-            # without a running loop, aiohttp 3.13 raises:
-            #   RuntimeError: no running event loop
-            # The test passes only if the session is created inside a loop.
-            session = resource._get_session()
-            assert session is not None
-            assert session.closed is False
-            # The configured timeout must be preserved.
-            assert session.timeout.total == 42.0
-            try:
-                resource.close()
-            except Exception:
-                pass
+            mock_client = MagicMock()
+            mock_client.get = MagicMock(side_effect=ConnectionError("always fails"))
+            MockZyteAPI.return_value = mock_client
 
-    def test_get_session_returns_same_session_across_calls(self):
-        """The session is shared across multiple get() calls (per-process
-        connection reuse). _get_session must return the same instance
-        while the session is open, and a fresh one after close.
+            resource = ZyteSessionResource(api_key="k1", max_retries=1)
+            with pytest.raises(ZyteServerError, match="max retries"):
+                resource.get({"url": "https://example.com"})
+            assert mock_client.get.call_count == 2
+
+    def test_cross_loop_runtime_error_surfaces_as_zyte_cross_loop_error(self, monkeypatch):
+        """aiohttp 3.13 raises RuntimeError('Timeout context manager should be
+        used inside a task') when the session's timeout fires on a loop
+        with no current task. This is a DIFFERENT failure mode from a true
+        network hang. Surface it as ZyteCrossLoopError so the operator
+        can tell them apart.
         """
-        from tcg_platform.defs import zyte_resources
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
+             patch("aiohttp.ClientSession"):
+            mock_client = MagicMock()
+            mock_client.get = MagicMock(
+                side_effect=RuntimeError("Timeout context manager should be used inside a task")
+            )
+            MockZyteAPI.return_value = mock_client
 
-        with patch.object(zyte_resources, "ZyteAPI"):
-            resource = zyte_resources.ZyteSessionResource(api_keys=["k1"], api_timeout=30.0)
-            s1 = resource._get_session()
-            s2 = resource._get_session()
-            assert s1 is s2, "session should be reused while open"
-            try:
-                resource.close()
-            except Exception:
-                pass
+            resource = ZyteSessionResource(api_key="k1", max_retries=0, api_timeout=10.0)
+            with pytest.raises(ZyteCrossLoopError) as exc_info:
+                resource.get({"url": "https://example.com"})
+            assert "cross-loop" in str(exc_info.value).lower() or "timeout" in str(exc_info.value).lower()
 
-    def test_get_returns_within_hard_timeout_when_zyte_call_hangs(self):
-        """A Zyte call that hangs past api_timeout MUST be aborted within
-        api_timeout + small slack, not block the caller indefinitely.
-
-        The aiohttp ClientTimeout can fail to fire in some code paths
-        (cross-loop, no current task). A separate hard timeout enforced
-        at the ZyteSessionResource level — independent of aiohttp internals —
-        is the only reliable way to bound a single Zyte call's wall time.
+    def test_hard_timeout_surfaces_as_zyte_timeout_error(self, monkeypatch):
+        """A Zyte call that hangs past api_timeout raises ZyteTimeoutError
+        within api_timeout + small slack, not a generic RuntimeError.
         """
-        import time
-        from tcg_platform.defs import zyte_resources
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession"):
             mock_client = MagicMock()
@@ -440,34 +339,20 @@ class TestZyteSessionResource:
             mock_client.get = hang
             MockZyteAPI.return_value = mock_client
 
-            # api_timeout=1s. The hang is 5s. The call must return within ~1.5s.
-            resource = ZyteSessionResource(api_keys=["k1"], max_retries=0, api_timeout=1.0)
+            resource = ZyteSessionResource(api_key="k1", max_retries=0, api_timeout=1.0)
             start = time.time()
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(ZyteTimeoutError):
                 resource.get({"url": "https://example.com", "browserHtml": True})
             elapsed = time.time() - start
             assert elapsed < 3.0, (
-                f"hard timeout did not fire: call took {elapsed:.2f}s, expected < 3s "
-                f"(api_timeout=1s + slack)"
-            )
-            # The error must clearly indicate a timeout, not be hidden behind
-            # the generic "all keys exhausted" message.
-            msg = str(exc_info.value)
-            assert "timeout" in msg.lower() or "TimeoutError" in type(exc_info.value).__name__, (
-                f"error should mention timeout; got: {type(exc_info.value).__name__}: {msg[:200]}"
-            )
-            assert "all keys exhausted" not in msg, (
-                f"timeout error was wrapped as 'all keys exhausted' — the real cause "
-                f"is hidden. msg: {msg[:200]}"
+                f"hard timeout did not fire: call took {elapsed:.2f}s, expected < 3s"
             )
 
-    def test_get_retries_within_a_key_after_hard_timeout(self):
-        """A hard timeout counts as a transient error: the same key should be
-        retried up to max_retries before rotating. This preserves the existing
-        semantics where transient errors retry on the same key first.
+    def test_get_retries_within_a_key_after_hard_timeout(self, monkeypatch):
+        """A hard timeout counts as a transient error: the same call should
+        be retried up to max_retries before failing. This preserves the
+        existing semantics where transient errors retry on the same key.
         """
-        import time
-        from tcg_platform.defs import zyte_resources
         with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
              patch("aiohttp.ClientSession"):
             mock_client = MagicMock()
@@ -480,37 +365,39 @@ class TestZyteSessionResource:
             mock_client.get = slow_then_fast
             MockZyteAPI.return_value = mock_client
 
-            # api_timeout=0.5s, max_retries=3. First call sleeps 2s (timeout at 0.5s),
-            # second call returns immediately. Total: ~0.5s (timeout) + fast retry.
-            resource = ZyteSessionResource(api_keys=["k1"], max_retries=3, api_timeout=0.5)
+            resource = ZyteSessionResource(api_key="k1", max_retries=3, api_timeout=0.5)
             start = time.time()
             r = resource.get({"url": "https://example.com", "browserHtml": True})
             elapsed = time.time() - start
             assert r["statusCode"] == 200
-            assert call_count[0] == 2, (
-                f"expected 2 calls (1 timeout + 1 success), got {call_count[0]}"
-            )
-            assert elapsed < 1.5, (
-                f"took {elapsed:.2f}s, expected < 1.5s (timeout 0.5s + retry)"
-            )
+            assert call_count[0] == 2
+            assert elapsed < 1.5
 
-    def test_session_has_configured_timeout(self, monkeypatch):
-        """The shared aiohttp.ClientSession MUST be created with timeout=<configured>."""
-        import aiohttp
-        from tcg_platform.defs import zyte_resources
 
-        captured_kwargs: dict = {}
+class TestReadApiKey:
+    """The single-env-var contract."""
 
-        class FakeSession:
-            def __init__(self, *args, **kwargs):
-                captured_kwargs.update(kwargs)
-                self.closed = True
+    def test_read_api_key_singular(self, monkeypatch):
+        monkeypatch.setenv("ZYTE_API_KEY", "k1")
+        monkeypatch.delenv("ZYTE_API_KEY1", raising=False)
+        monkeypatch.delenv("ZYTE_API_KEY2", raising=False)
+        from tcg_platform.defs.zyte_resources import _read_api_key
+        assert _read_api_key() == "k1"
 
-        monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
-        with patch.object(zyte_resources, "ZyteAPI"):
-            resource = zyte_resources.ZyteSessionResource(
-                api_keys=["key1"], api_timeout=42.0
-            )
-            resource._get_session()
-        assert "timeout" in captured_kwargs, f"ClientSession kwargs={captured_kwargs}"
-        assert captured_kwargs["timeout"].total == 42.0
+    def test_read_api_key_missing_raises(self, monkeypatch):
+        monkeypatch.delenv("ZYTE_API_KEY", raising=False)
+        monkeypatch.delenv("ZYTE_API_KEY1", raising=False)
+        from tcg_platform.defs.zyte_resources import _read_api_key
+        with pytest.raises(ValueError, match="ZYTE_API_KEY"):
+            _read_api_key()
+
+    def test_read_api_key_ignores_old_plural_form(self, monkeypatch):
+        """If the operator forgot to clean up the old ZYTE_API_KEY1, the
+        resource must NOT silently fall back to it. Only ZYTE_API_KEY is
+        valid in the single-key model.
+        """
+        monkeypatch.delenv("ZYTE_API_KEY", raising=False)
+        monkeypatch.setenv("ZYTE_API_KEY1", "k1")
+        from tcg_platform.defs.zyte_resources import _read_api_key
+        with pytest.raises(ValueError, match="ZYTE_API_KEY"):
+            _read_api_key()

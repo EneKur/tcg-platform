@@ -5,6 +5,7 @@ the structured bronze layer. The scraper does not know what a
 card_id is; it only deals with event_id (the eBay item id from the URL).
 """
 import logging
+import time
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -29,6 +30,13 @@ _LOG = logging.getLogger(__name__)
 
 RAW_BUCKET = "tcg-raw"
 EMPTY_STREAK_THRESHOLD = 5
+
+# Hard caps (2026-06-16 redesign): a runaway eBay category can't burn
+# the API budget. Tuned to fit a healthy eBay category (~5s per page
+# in 2026-06-16 live tests; 20 pages * 5s = 100s of pure page-fetch
+# time, plus 0-60 item pages).
+MAX_PAGES_PER_REGION = 20
+MAX_WALL_CLOCK_S = 900  # 15 minutes per region
 
 
 class WrittenItem(NamedTuple):
@@ -67,11 +75,19 @@ def _scrape_region(
     region: str,
     search_url_for_page_fn,
     parse_search_page_fn,
-) -> tuple[list[WrittenItem], list[str]]:
+) -> tuple[list[WrittenItem], list[str], dict]:
     """Scrape one region's sold listings into tcg-raw.
 
-    Returns (newly_written, log_lines). The caller writes log_lines
-    to tcg-raw/logs/{timestamp}.log at the end of the run.
+    Returns (newly_written, log_lines, counts). The caller writes
+    log_lines to tcg-raw/logs/{timestamp}.log and exposes counts
+    in MaterializeResult.metadata.
+
+    Exception tolerance: a Zyte SDK exception (timeout, request error,
+    cross-loop) on the search-page call logs `STOP ... exc=...` and
+    breaks. The same on a per-item call logs `FAIL zyte_exc event_id=...`
+    and continues to the next item. The scraper does NOT propagate
+    Zyte exceptions out of this function — a single bad page or item
+    must not crash the whole `complete_eu_pipeline`.
     """
     log: list[str] = []
     log.append(f"{datetime.now(timezone.utc).isoformat()} START region={region}")
@@ -87,16 +103,50 @@ def _scrape_region(
     images_skipped_already_seen = 0
     images_downloaded = 0
     images_failed = 0
+    pages_timeout = 0
+    items_timeout = 0
     empty_streak = 0
     found_items_on_any_page = False
+    max_pages_stopped = False
+    max_wall_clock_stopped = False
+
+    start_monotonic = time.monotonic()
 
     while True:
+        elapsed_s = time.monotonic() - start_monotonic
+
+        # Wall-clock cap: stop the region before blowing the budget.
+        if elapsed_s > MAX_WALL_CLOCK_S:
+            log.append(
+                f"{datetime.now(timezone.utc).isoformat()} STOP max_wall_clock "
+                f"elapsed_s={elapsed_s:.1f} max_wall_clock_s={MAX_WALL_CLOCK_S} "
+                f"pages_fetched={pages_fetched}"
+            )
+            max_wall_clock_stopped = True
+            break
+
+        # Per-page heartbeat (emitted BEFORE the Zyte call so the operator
+        # can see the page is in flight even if Zyte hangs).
+        log.append(
+            f"{datetime.now(timezone.utc).isoformat()} HEARTBEAT "
+            f"search_page={page} elapsed_s={elapsed_s:.1f} "
+            f"pages_fetched={pages_fetched} items_seen={items_seen}"
+        )
+
         search_url = search_url_for_page_fn(page)
         log.append(
             f"{datetime.now(timezone.utc).isoformat()} FETCH "
             f"search_page={page} url={search_url}"
         )
-        resp = zyte_client.get({"url": search_url, "browserHtml": True})
+        try:
+            resp = zyte_client.get({"url": search_url, "browserHtml": True})
+        except Exception as e:
+            pages_timeout += 1
+            log.append(
+                f"{datetime.now(timezone.utc).isoformat()} STOP "
+                f"search_page={page} exc={type(e).__name__}: {str(e)[:200]}"
+            )
+            break
         pages_fetched += 1
         if resp.get("statusCode") != 200:
             log.append(
@@ -146,7 +196,15 @@ def _scrape_region(
                 continue
 
             # Fetch item page
-            item_resp = zyte_client.get({"url": item_url, "browserHtml": True})
+            try:
+                item_resp = zyte_client.get({"url": item_url, "browserHtml": True})
+            except Exception as e:
+                items_timeout += 1
+                log.append(
+                    f"{datetime.now(timezone.utc).isoformat()} FAIL zyte_exc "
+                    f"event_id={event_id} exc={type(e).__name__}: {str(e)[:200]}"
+                )
+                continue
             items_fetched_zyte += 1
             if item_resp.get("statusCode") != 200:
                 items_failed_zyte += 1
@@ -229,6 +287,17 @@ def _scrape_region(
 
         page += 1
 
+        # Max-pages cap: stop the region before blowing the budget.
+        if page > MAX_PAGES_PER_REGION:
+            log.append(
+                f"{datetime.now(timezone.utc).isoformat()} STOP max_pages "
+                f"pages_fetched={pages_fetched} max_pages={MAX_PAGES_PER_REGION}"
+            )
+            max_pages_stopped = True
+            break
+
+    wall_clock_seconds = time.monotonic() - start_monotonic
+
     log.append(
         f"{datetime.now(timezone.utc).isoformat()} END region={region} "
         f"pages_fetched={pages_fetched} items_seen={items_seen} "
@@ -237,9 +306,30 @@ def _scrape_region(
         f"items_failed_parse={items_failed_parse} "
         f"images_downloaded={images_downloaded} "
         f"images_skipped_already_seen={images_skipped_already_seen} "
-        f"images_failed={images_failed} written={len(written)}"
+        f"images_failed={images_failed} written={len(written)} "
+        f"wall_clock_seconds={wall_clock_seconds} "
+        f"max_pages_stopped={max_pages_stopped} "
+        f"max_wall_clock_stopped={max_wall_clock_stopped}"
     )
-    return written, log
+
+    counts = {
+        "pages_fetched": pages_fetched,
+        "items_seen": items_seen,
+        "items_skipped_already_seen": items_skipped_already_seen,
+        "items_fetched_zyte": items_fetched_zyte,
+        "items_failed_zyte": items_failed_zyte,
+        "items_failed_parse": items_failed_parse,
+        "images_downloaded": images_downloaded,
+        "images_skipped_already_seen": images_skipped_already_seen,
+        "images_failed": images_failed,
+        "pages_timeout": pages_timeout,
+        "items_timeout": items_timeout,
+        "wall_clock_seconds": wall_clock_seconds,
+        "max_pages_stopped": max_pages_stopped,
+        "max_wall_clock_stopped": max_wall_clock_stopped,
+        "written": len(written),
+    }
+    return written, log, counts
 
 
 def _write_log(minio_client, log_lines: list[str]) -> bytes | None:
@@ -274,17 +364,22 @@ def scrape_ebay_de_raw(context: dg.AssetExecutionContext) -> list:
     images to tcg-raw/sold_images/DE/{event_id}.jpg. Skips event_ids
     that already have raw HTML persisted (atomic check on MinIO).
     Writes a run log to tcg-raw/logs/{timestamp}.log at end of run.
+
+    The asset's MaterializeResult metadata surfaces live counters
+    (pages_fetched, items_seen, written, max_pages_stopped, etc.) so
+    the Dagster UI shows progress without parsing the run log file.
     """
     minio_client = context.resources.tcg_raw_client
     zyte_client = context.resources.zyte_session_resource
 
-    written, log_lines = _scrape_region(
+    written, log_lines, counts = _scrape_region(
         minio_client, zyte_client, "DE",
         de_search_url_for_page, parse_ebay_de_search_page,
     )
     _write_log(minio_client, log_lines)
 
-    context.log.info(f"DE scrape complete: written={len(written)}")
+    context.log.info(f"DE scrape complete: written={len(written)} counts={counts}")
+    context.add_output_metadata(metadata=counts)
     return [
         {"event_id": w.event_id, "region": w.region, "sold_date": w.sold_date}
         for w in written
@@ -300,13 +395,14 @@ def scrape_ebay_uk_raw(context: dg.AssetExecutionContext) -> list:
     minio_client = context.resources.tcg_raw_client
     zyte_client = context.resources.zyte_session_resource
 
-    written, log_lines = _scrape_region(
+    written, log_lines, counts = _scrape_region(
         minio_client, zyte_client, "UK",
         uk_search_url_for_page, parse_ebay_uk_search_page,
     )
     _write_log(minio_client, log_lines)
 
-    context.log.info(f"UK scrape complete: written={len(written)}")
+    context.log.info(f"UK scrape complete: written={len(written)} counts={counts}")
+    context.add_output_metadata(metadata=counts)
     return [
         {"event_id": w.event_id, "region": w.region, "sold_date": w.sold_date}
         for w in written
