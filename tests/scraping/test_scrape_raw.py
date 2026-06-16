@@ -197,7 +197,7 @@ def test_scrape_region_writes_html_and_image_for_new_item(monkeypatch):
         return []
     monkeypatch.setattr(de_search, "parse_ebay_de_search_page", _parse_first_only)
 
-    written, log_lines = _scrape_region(
+    written, log_lines, _counts = _scrape_region(
         resource, zyte, "DE",
         de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
     )
@@ -250,7 +250,7 @@ def test_scrape_region_skips_already_in_raw(monkeypatch):
         return []
     monkeypatch.setattr(de_search, "parse_ebay_de_search_page", _parse_first_only)
 
-    written, log_lines = _scrape_region(
+    written, log_lines, _counts = _scrape_region(
         resource, zyte, "DE",
         de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
     )
@@ -284,7 +284,7 @@ def test_scrape_region_stops_at_empty_streak(monkeypatch):
     monkeypatch.setattr(de_search, "search_url_for_page", lambda p: f"https://www.ebay.de/sch/p{p}")
     monkeypatch.setattr(de_search, "parse_ebay_de_search_page", lambda html: [])
 
-    written, log_lines = _scrape_region(
+    written, log_lines, _counts = _scrape_region(
         resource, zyte, "DE",
         de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
     )
@@ -347,7 +347,7 @@ def test_scrape_region_walks_multiple_pages(monkeypatch):
     import tcg_platform.defs.scrape_raw as sr
     monkeypatch.setattr(sr, "extract_item_image_url", lambda html: None)
 
-    written, log_lines = _scrape_region(
+    written, log_lines, _counts = _scrape_region(
         resource, zyte, "DE",
         de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
     )
@@ -398,7 +398,7 @@ def test_scrape_region_handles_failed_zyte_call(monkeypatch):
         return []
     monkeypatch.setattr(de_search, "parse_ebay_de_search_page", _parse_first_only)
 
-    written, log_lines = _scrape_region(
+    written, log_lines, _counts = _scrape_region(
         resource, zyte, "DE",
         de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
     )
@@ -446,5 +446,289 @@ def test_write_log_writes_blob_to_logs_prefix(monkeypatch):
     assert len(log_puts) == 1
     assert log_puts[0]["object_name"].startswith("logs/")
     assert log_puts[0]["object_name"].endswith(".log")
+
+
+# --- 2026-06-16 redesign: per-page heartbeat, hard caps, exception tolerance ---
+
+class _RaisingZyteClient:
+    """A Zyte client that raises an exception on a specific call number,
+    then falls through to the wrapped client's responses. Mirrors
+    FakeZyteClient (which records `.calls` as a list of request dicts).
+
+    `raise_on_call`: 1-indexed call number on which to raise. Calls
+    before and after that number are passed through to `fallback`.
+    """
+
+    def __init__(self, raise_on_call: int, exc: Exception, fallback):
+        self._raise_on_call = raise_on_call
+        self._exc = exc
+        self._fallback = fallback
+        self.calls: list[dict] = []
+
+    def get(self, request):
+        self.calls.append(request)
+        if len(self.calls) == self._raise_on_call:
+            raise self._exc
+        return self._fallback.get(request)
+
+
+def test_scrape_region_continues_after_zyte_exception_on_search_page(monkeypatch):
+    """A Zyte SDK exception on the search-page call must NOT crash the
+    scraper. It must log `STOP ... exc=...` and break, returning whatever
+    items were already written (none, in this case).
+    """
+    from tcg_platform.defs.zyte_resources import ZyteTimeoutError
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
+    minio = FakeMinioClient()
+    zyte = _RaisingZyteClient(
+        raise_on_call=1,
+        exc=ZyteTimeoutError("simulated timeout on first call"),
+        fallback=FakeZyteClient([]),
+    )
+
+    from tcg_platform.resources.minio_client import MinioClientResource
+    resource = MinioClientResource(
+        endpoint="localhost:9000", access_key="x", secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = minio.client
+
+    import tcg_platform.scraping.ebay_de_search as de_search
+    monkeypatch.setattr(de_search, "search_url_for_page", lambda p: f"https://www.ebay.de/sch/p{p}")
+    monkeypatch.setattr(de_search, "parse_ebay_de_search_page", lambda html: [])
+
+    written, log_lines, counts = _scrape_region(
+        resource, zyte, "DE",
+        de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
+    )
+    assert written == []
+    assert counts["pages_timeout"] == 1
+    # The STOP line mentions the exception type.
+    assert any("STOP" in line and "exc=ZyteTimeoutError" in line for line in log_lines), (
+        f"expected a STOP line with exc=ZyteTimeoutError; log was:\n"
+        + "\n".join(log_lines)
+    )
+
+
+def test_scrape_region_continues_after_zyte_exception_on_item_page(monkeypatch):
+    """A Zyte SDK exception on a per-item call must NOT crash the scraper.
+    It must log `FAIL zyte_exc event_id=...` and continue to the next item.
+    Other items on the same page must still be fetched and written.
+    """
+    from tcg_platform.defs.zyte_resources import ZyteServerError
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
+    minio = FakeMinioClient()
+    # Call sequence:
+    #   1: search page 1 → returns 2 items (11111, 22222)
+    #   2: item 11111 → RAISES ZyteServerError
+    #   3: item 22222 → returns good HTML (must be written)
+    #   4+: search page 2+ → empty (loop exits via empty_streak)
+    search_html = (
+        _search_html_one_item("https://www.ebay.de/itm/11111")
+        + _search_html_one_item("https://www.ebay.de/itm/22222")
+    )
+    zyte = _RaisingZyteClient(
+        raise_on_call=2,  # raise on the 2nd call (first item-page)
+        exc=ZyteServerError(status=503, message="unhealthy"),
+        fallback=FakeZyteClient([
+            {"statusCode": 200, "browserHtml": search_html},  # call 1: search
+            # call 2 raises (handled by _RaisingZyteClient)
+            {"statusCode": 200, "browserHtml": _good_de_html()},  # call 3: item 22222
+        ] + [{"statusCode": 200, "browserHtml": "<html><body>no items</body></html>"}] * 10),
+    )
+
+    from tcg_platform.resources.minio_client import MinioClientResource
+    resource = MinioClientResource(
+        endpoint="localhost:9000", access_key="x", secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = minio.client
+
+    import tcg_platform.scraping.ebay_de_search as de_search
+    monkeypatch.setattr(de_search, "search_url_for_page", lambda p: f"https://www.ebay.de/sch/p{p}")
+
+    _call_count = {"n": 0}
+    def _parse_first_only(html):
+        _call_count["n"] += 1
+        if _call_count["n"] == 1:
+            return [
+                ("https://www.ebay.de/itm/11111", "2026-06-11"),
+                ("https://www.ebay.de/itm/22222", "2026-06-11"),
+            ]
+        return []
+    monkeypatch.setattr(de_search, "parse_ebay_de_search_page", _parse_first_only)
+
+    import tcg_platform.defs.scrape_raw as sr
+    monkeypatch.setattr(sr, "extract_item_image_url", lambda html: None)
+
+    written, log_lines, counts = _scrape_region(
+        resource, zyte, "DE",
+        de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
+    )
+    # Item 11111 was the failed one; item 22222 must still be written.
+    event_ids = {w.event_id for w in written}
+    assert "11111" not in event_ids, "failed item must not be in written"
+    assert "22222" in event_ids, f"good item must be written; got {event_ids}"
+    assert counts["items_timeout"] == 1
+    # The FAIL line for item 11111 mentions the exception.
+    assert any(
+        "FAIL zyte_exc event_id=11111" in line and "ZyteServerError" in line
+        for line in log_lines
+    ), f"expected FAIL zyte_exc line for 11111; log was:\n" + "\n".join(log_lines)
+
+
+def test_scrape_region_respects_max_pages(monkeypatch):
+    """With MAX_PAGES_PER_REGION=3, the scraper stops after 3 pages even
+    if every page has items.
+    """
+    from tcg_platform.defs import scrape_raw
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
+    minio = FakeMinioClient()
+    # 10 search pages, each with 1 item, each followed by 1 item page
+    zyte_responses = []
+    for _ in range(10):
+        zyte_responses.append({
+            "statusCode": 200,
+            "browserHtml": _search_html_one_item("https://www.ebay.de/itm/99999"),
+        })
+        zyte_responses.append({"statusCode": 200, "browserHtml": _good_de_html()})
+    zyte = FakeZyteClient(zyte_responses)
+
+    from tcg_platform.resources.minio_client import MinioClientResource
+    resource = MinioClientResource(
+        endpoint="localhost:9000", access_key="x", secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = minio.client
+
+    import tcg_platform.scraping.ebay_de_search as de_search
+    monkeypatch.setattr(de_search, "search_url_for_page", lambda p: f"https://www.ebay.de/sch/p{p}")
+    monkeypatch.setattr(de_search, "parse_ebay_de_search_page",
+                        lambda html: [("https://www.ebay.de/itm/99999", "2026-06-11")])
+
+    import tcg_platform.defs.scrape_raw as sr
+    monkeypatch.setattr(sr, "extract_item_image_url", lambda html: None)
+    monkeypatch.setattr(scrape_raw, "MAX_PAGES_PER_REGION", 3)
+
+    written, log_lines, counts = _scrape_region(
+        resource, zyte, "DE",
+        de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
+    )
+    assert counts["max_pages_stopped"] is True
+    # Pages fetched: 3 search pages + 3 item pages = 6 Zyte calls. 7th
+    # call would be page 4's search; that should NOT happen.
+    assert len(zyte.calls) == 6, f"expected 6 Zyte calls (3 search + 3 item), got {len(zyte.calls)}"
+    assert any("STOP max_pages" in line for line in log_lines), (
+        f"expected STOP max_pages in log; log was:\n" + "\n".join(log_lines)
+    )
+
+
+def test_scrape_region_respects_max_wall_clock(monkeypatch):
+    """With MAX_WALL_CLOCK_S=0.05 (50ms), the scraper stops after the
+    first page even if items remain.
+    """
+    import time
+    from tcg_platform.defs import scrape_raw
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
+    minio = FakeMinioClient()
+    # 10 search pages, each with 1 item — without the cap, scraper would walk all 10
+    zyte_responses = []
+    for _ in range(10):
+        zyte_responses.append({
+            "statusCode": 200,
+            "browserHtml": _search_html_one_item("https://www.ebay.de/itm/99999"),
+        })
+        zyte_responses.append({"statusCode": 200, "browserHtml": _good_de_html()})
+
+    class SlowZyteClient(FakeZyteClient):
+        def get(self, request):
+            time.sleep(0.02)  # each call takes 20ms
+            return super().get(request)
+
+    zyte = SlowZyteClient(zyte_responses)
+
+    from tcg_platform.resources.minio_client import MinioClientResource
+    resource = MinioClientResource(
+        endpoint="localhost:9000", access_key="x", secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = minio.client
+
+    import tcg_platform.scraping.ebay_de_search as de_search
+    monkeypatch.setattr(de_search, "search_url_for_page", lambda p: f"https://www.ebay.de/sch/p{p}")
+    monkeypatch.setattr(de_search, "parse_ebay_de_search_page",
+                        lambda html: [("https://www.ebay.de/itm/99999", "2026-06-11")])
+
+    import tcg_platform.defs.scrape_raw as sr
+    monkeypatch.setattr(sr, "extract_item_image_url", lambda html: None)
+    monkeypatch.setattr(scrape_raw, "MAX_WALL_CLOCK_S", 0.05)
+
+    written, log_lines, counts = _scrape_region(
+        resource, zyte, "DE",
+        de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
+    )
+    assert counts["max_wall_clock_stopped"] is True
+    assert any("STOP max_wall_clock" in line for line in log_lines), (
+        f"expected STOP max_wall_clock in log; log was:\n" + "\n".join(log_lines)
+    )
+    # The cap fired well before all 20 Zyte calls were made.
+    assert len(zyte.calls) < 20, f"expected <20 Zyte calls, got {len(zyte.calls)}"
+
+
+def test_scrape_region_emits_heartbeat_per_page(monkeypatch):
+    """Every page iteration must emit a `HEARTBEAT` log line with elapsed
+    time, page number, and counters. This is what the Dagster UI surfaces
+    via MaterializeResult.metadata.
+    """
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "x")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "y")
+    minio = FakeMinioClient()
+    zyte = FakeZyteClient([
+        {"statusCode": 200, "browserHtml": _search_html_one_item(
+            "https://www.ebay.de/itm/99999"
+        )},
+        {"statusCode": 200, "browserHtml": _good_de_html()},
+        {"statusCode": 200, "browserHtml": "<html><body>no items</body></html>"},
+    ] * 5)
+
+    from tcg_platform.resources.minio_client import MinioClientResource
+    resource = MinioClientResource(
+        endpoint="localhost:9000", access_key="x", secret_key="y",
+        bucket_name="tcg-raw",
+    )
+    resource._client = minio.client
+
+    import tcg_platform.scraping.ebay_de_search as de_search
+    monkeypatch.setattr(de_search, "search_url_for_page", lambda p: f"https://www.ebay.de/sch/p{p}")
+    _call_count = {"n": 0}
+    def _parse_first_only(html):
+        _call_count["n"] += 1
+        if _call_count["n"] == 1:
+            return [("https://www.ebay.de/itm/99999", "2026-06-11")]
+        return []
+    monkeypatch.setattr(de_search, "parse_ebay_de_search_page", _parse_first_only)
+
+    import tcg_platform.defs.scrape_raw as sr
+    monkeypatch.setattr(sr, "extract_item_image_url", lambda html: None)
+
+    written, log_lines, counts = _scrape_region(
+        resource, zyte, "DE",
+        de_search.search_url_for_page, de_search.parse_ebay_de_search_page,
+    )
+    heartbeat_lines = [l for l in log_lines if "HEARTBEAT" in l]
+    assert len(heartbeat_lines) >= 2, (
+        f"expected >=2 HEARTBEAT lines; got {len(heartbeat_lines)}. Log:\n"
+        + "\n".join(log_lines)
+    )
+    # Heartbeat must include the page number, elapsed time, and counters.
+    for line in heartbeat_lines:
+        assert "search_page=" in line
+        assert "elapsed_s=" in line
+        assert "pages_fetched=" in line
+        assert "items_seen=" in line
 
 
