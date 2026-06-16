@@ -5,13 +5,19 @@ The operator provides a single ZYTE_API_KEY in the environment. There is
 no rotation, no dead-key machinery. Each failure mode (4xx, 5xx, hard
 timeout, aiohttp cross-loop) surfaces as a named exception so the
 operator can tell them apart.
+
+The resource does NOT pre-create an aiohttp.ClientSession. The Zyte
+SDK creates its own short-lived session per call. This avoids the
+aiohttp 3.13 cross-loop bug (`Timeout context manager should be used
+inside a task`) that fires when the session's loop and the request's
+loop differ. The hard Python-level `future.result(timeout=api_timeout)`
+is the only timeout the resource enforces.
 """
 import asyncio
 import concurrent.futures
 import os
 import time
 
-import aiohttp
 from dagster import resource
 from dagster._config.pythonic_config.resource import InitResourceContext
 
@@ -95,7 +101,6 @@ class ZyteSessionResource:
         self._n_conn = n_conn
         self._max_retries = max_retries
         self._api_timeout = api_timeout
-        self._session: "aiohttp.ClientSession | None" = None
         self._retry_stats: dict[str, int] = {}
         # Bounded thread pool for the hard per-call timeout. Each Zyte call
         # is submitted here and we apply a hard Python-level deadline via
@@ -107,23 +112,6 @@ class ZyteSessionResource:
             max_workers=8, thread_name_prefix="zyte-call"
         )
 
-    def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is None or loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            timeout = aiohttp.ClientTimeout(total=self._api_timeout)
-
-            async def _make_session() -> aiohttp.ClientSession:
-                return aiohttp.ClientSession(timeout=timeout)
-
-            self._session = loop.run_until_complete(_make_session())
-        return self._session
-
     def _try_get(self, request: dict) -> dict:
         last_error: BaseException | None = None
         for attempt in range(self._max_retries + 1):
@@ -131,12 +119,12 @@ class ZyteSessionResource:
                 future = self._call_executor.submit(
                     self._client.get,
                     request,
-                    session=self._get_session(),
                     handle_retries=False,
                 )
-                # Hard Python-level deadline. Independent of aiohttp's
-                # ClientTimeout, which can fail to fire inside
-                # loop.run_until_complete (no current task / cross-loop).
+                # Hard Python-level deadline. The Zyte SDK creates a
+                # short-lived aiohttp.ClientSession per call (no
+                # cross-loop bug). This future.result timeout is the
+                # only hard deadline the resource enforces.
                 response = future.result(timeout=self._api_timeout)
                 status = response.get("statusCode", 0)
                 # 5xx and 429 are transient — retry.
@@ -227,27 +215,6 @@ class ZyteSessionResource:
 
     def get_retry_stats(self) -> dict:
         return dict(self._retry_stats)
-
-    def close(self) -> None:
-        if self._session is None:
-            return
-        if self._session.closed:
-            self._session = None
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is None or not loop.is_running():
-            try:
-                new_loop = asyncio.new_event_loop()
-                try:
-                    new_loop.run_until_complete(self._session.close())
-                finally:
-                    new_loop.close()
-            except Exception:
-                pass
-        self._session = None
 
 
 # --- Env-var reader ----------------------------------------------------------

@@ -27,8 +27,7 @@ class TestZyteSessionResourceSingleKey:
     """The single-key contract."""
 
     def test_constructor_accepts_single_api_key(self):
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession"):
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             resource = ZyteSessionResource(api_key="test-key-123")
             assert resource is not None
             MockZyteAPI.assert_called_once()
@@ -40,72 +39,53 @@ class TestZyteSessionResourceSingleKey:
         with pytest.raises(TypeError):
             ZyteSessionResource(api_keys=["test-key-123"])
 
-    def test_get_session_works_with_real_aiohttp_313(self):
-        """Regression: aiohttp 3.13's ClientSession constructor requires
-        a running event loop. The session MUST be created inside a loop
-        so aiohttp 3.13 can capture the loop reference.
+    def test_get_does_not_create_aiohttp_session(self, monkeypatch):
+        """Regression guard: the resource MUST NOT pre-create an
+        aiohttp.ClientSession. Doing so reintroduces the aiohttp 3.13
+        cross-loop bug (`Timeout context manager should be used inside
+        a task`) when the session's loop and the request's loop differ
+        — see `docs/superpowers/specs/2026-06-16-zyte-cross-loop-fix-design.md`.
+
+        The Zyte SDK creates its own short-lived session per call. The
+        Python-level `future.result(timeout=api_timeout)` is the only
+        hard deadline.
         """
-        from tcg_platform.defs import zyte_resources
-
-        with patch.object(zyte_resources, "ZyteAPI"):
-            resource = ZyteSessionResource(api_key="k1", api_timeout=42.0)
-            session = resource._get_session()
-            assert session is not None
-            assert session.closed is False
-            assert session.timeout.total == 42.0
-            try:
-                resource.close()
-            except Exception:
-                pass
-
-    def test_get_session_returns_same_session_across_calls(self):
-        """The session is shared across multiple get() calls (per-process
-        connection reuse).
-        """
-        from tcg_platform.defs import zyte_resources
-
-        with patch.object(zyte_resources, "ZyteAPI"):
-            resource = zyte_resources.ZyteSessionResource(api_key="k1", api_timeout=30.0)
-            s1 = resource._get_session()
-            s2 = resource._get_session()
-            assert s1 is s2, "session should be reused while open"
-            try:
-                resource.close()
-            except Exception:
-                pass
-
-    def test_session_has_configured_timeout(self, monkeypatch):
-        """The shared aiohttp.ClientSession MUST be created with timeout=<configured>."""
         import aiohttp
-        from tcg_platform.defs import zyte_resources
+        from tcg_platform.defs.zyte_resources import ZyteSessionResource
 
-        captured_kwargs: dict = {}
+        crash_on_construct: list = []
 
-        class FakeSession:
+        class _CrashingSession:
             def __init__(self, *args, **kwargs):
-                captured_kwargs.update(kwargs)
-                self.closed = True
+                crash_on_construct.append((args, kwargs))
+                raise AssertionError(
+                    "ZyteSessionResource must not pre-create aiohttp.ClientSession"
+                )
 
-        monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
-        with patch.object(zyte_resources, "ZyteAPI"):
-            resource = zyte_resources.ZyteSessionResource(
-                api_key="key1", api_timeout=42.0
+        monkeypatch.setattr(aiohttp, "ClientSession", _CrashingSession)
+
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
+            mock_client = MagicMock()
+            mock_client.get = MagicMock(
+                return_value={"statusCode": 200, "browserHtml": "<html/>"}
             )
-            resource._get_session()
-        assert "timeout" in captured_kwargs, f"ClientSession kwargs={captured_kwargs}"
-        assert captured_kwargs["timeout"].total == 42.0
+            MockZyteAPI.return_value = mock_client
+
+            resource = ZyteSessionResource(api_key="k1", api_timeout=10)
+            result = resource.get({"url": "https://example.com", "browserHtml": True})
+
+        assert result == {"statusCode": 200, "browserHtml": "<html/>"}
+        assert crash_on_construct == [], (
+            f"ZyteSessionResource must not pre-create aiohttp.ClientSession; "
+            f"got {len(crash_on_construct)} construct attempts"
+        )
 
 
 class TestZyteSessionResourceSuccess:
     """Happy path: retry on transient errors, return the response."""
 
     def test_retry_on_transient_connection_error(self, monkeypatch):
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             call_count = [0]
 
@@ -124,12 +104,7 @@ class TestZyteSessionResourceSuccess:
             assert call_count[0] == 3
 
     def test_retry_stats_tracked(self, monkeypatch):
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             call_count = [0]
 
@@ -149,12 +124,7 @@ class TestZyteSessionResourceSuccess:
 
     def test_5xx_triggers_retry_then_success(self, monkeypatch):
         """A 5xx from Zyte is transient — retry, then succeed."""
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             call_count = [0]
 
@@ -174,12 +144,7 @@ class TestZyteSessionResourceSuccess:
 
     def test_429_triggers_retry(self, monkeypatch):
         """429 (rate-limited) is transient — retry."""
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             call_count = [0]
 
@@ -200,12 +165,7 @@ class TestZyteSessionResourceSuccess:
         """The Zyte SDK's internal retry policy wastes budget on dead keys.
         We pass handle_retries=False so our wrapper owns retry decisions.
         """
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             live_key = MagicMock()
             live_key.get = MagicMock(
                 return_value={"statusCode": 200, "browserHtml": "<html/>"}
@@ -230,12 +190,7 @@ class TestZyteSessionResourceFailureModes:
         """A 4xx from Zyte is NOT a timeout. It is a 4xx. Surface as
         ZyteRequestError with the real status code attached.
         """
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             mock_client.get = MagicMock(
                 return_value={"statusCode": 403, "browserHtml": ""}
@@ -249,12 +204,7 @@ class TestZyteSessionResourceFailureModes:
 
     def test_4xx_no_retry(self, monkeypatch):
         """A 4xx is final — don't retry it, don't wait for timeouts."""
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             mock_client.get = MagicMock(
                 return_value={"statusCode": 401, "browserHtml": ""}
@@ -268,12 +218,7 @@ class TestZyteSessionResourceFailureModes:
 
     def test_5xx_after_retries_surfaces_as_zyte_server_error(self, monkeypatch):
         """A 5xx that persists across all retries is reported as ZyteServerError."""
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             mock_client.get = MagicMock(
                 return_value={"statusCode": 503, "browserHtml": ""}
@@ -291,12 +236,7 @@ class TestZyteSessionResourceFailureModes:
         """A persistent transient error (e.g. ConnectionError) raises
         ZyteServerError after max_retries+1 attempts.
         """
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession") as MockSession:
-            mock_session = MagicMock()
-            mock_session.closed = False
-            MockSession.return_value = mock_session
-
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             mock_client.get = MagicMock(side_effect=ConnectionError("always fails"))
             MockZyteAPI.return_value = mock_client
@@ -313,8 +253,7 @@ class TestZyteSessionResourceFailureModes:
         network hang. Surface it as ZyteCrossLoopError so the operator
         can tell them apart.
         """
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession"):
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             mock_client.get = MagicMock(
                 side_effect=RuntimeError("Timeout context manager should be used inside a task")
@@ -330,8 +269,7 @@ class TestZyteSessionResourceFailureModes:
         """A Zyte call that hangs past api_timeout raises ZyteTimeoutError
         within api_timeout + small slack, not a generic RuntimeError.
         """
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession"):
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             def hang(*args, **kwargs):
                 time.sleep(5)  # longer than api_timeout=1 below
@@ -353,8 +291,7 @@ class TestZyteSessionResourceFailureModes:
         be retried up to max_retries before failing. This preserves the
         existing semantics where transient errors retry on the same key.
         """
-        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI, \
-             patch("aiohttp.ClientSession"):
+        with patch("tcg_platform.defs.zyte_resources.ZyteAPI") as MockZyteAPI:
             mock_client = MagicMock()
             call_count = [0]
             def slow_then_fast(*args, **kwargs):
