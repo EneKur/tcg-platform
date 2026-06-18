@@ -67,9 +67,12 @@ tests, defer the fix. The 2026-06-10 log also notes that a
 **File:** `src/tcg_platform/serialization/card_parquet.py` (new function)
 
 ```python
+import hashlib
+
 from tcg_platform.scraping.ebay_utils import extract_item_id
 
 LIMITLESS_HOST = "onepiece.limitlesstcg.com"
+
 
 def derive_event_id(source_url: str) -> str:
     """Return a non-empty, deterministic event_id for the given source URL.
@@ -77,11 +80,12 @@ def derive_event_id(source_url: str) -> str:
     - eBay DE/UK item pages: the eBay item_id (already a unique sold event).
     - Limitless TCG card pages: f"limitless-{card_id}" (the source has no
       sold event; we synthesize a stable id from the card_id).
-    - Anything else: f"unknown-{hash(source_url) % 10**8}" (deterministic
-      8-digit suffix, non-empty, debuggable).
+    - Anything else: f"unknown-{md5(source_url)[:8]}" (deterministic
+      8-char suffix, non-empty, debuggable, cross-run stable).
     """
     if not source_url:
         return "unknown-0"
+    source_url = source_url.split("?", 1)[0]  # strip query string
     if LIMITLESS_HOST in source_url:
         # /cards/OP01-001 -> "OP01-001"
         parts = source_url.rstrip("/").split("/")
@@ -90,8 +94,14 @@ def derive_event_id(source_url: str) -> str:
         item_id = extract_item_id(source_url)
         if item_id and item_id.isdigit():
             return item_id
-    return f"unknown-{abs(hash(source_url)) % 10**8}"
+    digest = hashlib.md5(source_url.encode()).hexdigest()[:8]
+    return f"unknown-{digest}"
 ```
+
+> **Note:** Python's `hash()` is randomized per-process (PYTHONHASHSEED),
+> so the unknown branch must use `hashlib.md5` for cross-run stability.
+> The Risks section (below) flags this; the test
+> `test_derive_event_id_uses_md5_not_python_hash` pins the contract.
 
 `extract_item_id` is already a pure function in
 `src/tcg_platform/scraping/ebay_utils.py` (re-exported from
@@ -233,10 +243,12 @@ of object names (see `src/tcg_platform/resources/minio_client.py:90-97`).
 
 **File:** `src/tcg_platform/defs/bronze_fact_events_parquet.py` (modified)
 
-Add a `build_local_image_path_map(minio_client.client)` call
-before the `price_records_to_parquet` call. Pass the result as
-`local_image_path_map`. No change to the asset's
-`MaterializeResult` or the partition path.
+Add a `build_local_image_path_map(minio_client)` call before the
+`price_records_to_parquet` call. The resource itself has a
+`list_objects(bucket, prefix)` method that returns `list[str]`
+of object names — the helper takes the resource, not the
+underlying client. Pass the result as `local_image_path_map`. No
+change to the asset's `MaterializeResult` or the partition path.
 
 ### Change 6: `limitless_pipeline` job
 
@@ -309,6 +321,16 @@ Add 6 new tests:
 
 Net: 14 − 2 (delete 2 outdated) + 8 (new) = 20 tests in this file,
 up from 14. The full suite should grow by +6 net.
+
+**Actual outcome (post-implementation, 2026-06-18):** 35 tests in
+`tests/serialization/test_card_parquet.py`, +21 net from 14. The
+plan's lower estimate assumed no extra tests would be added during
+code review; in fact the Task 1 review found a query-string bug
+that required 4 additional `derive_event_id` tests, and the Task 2
+review flagged a missing test for the `local_image_path_map`
+backfill contract that required 3 more. The 35-test count is the
+intentional final state — every test pins a specific contract
+clause that the spec or a code review identified.
 
 **File:** `tests/defs/test_definitions_load.py` — no change. The
 job is registered; the existing load test still passes.
