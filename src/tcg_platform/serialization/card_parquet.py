@@ -1,6 +1,5 @@
 import hashlib
 import io
-from datetime import datetime, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -34,24 +33,35 @@ def derive_event_id(source_url: str) -> str:
     return f"unknown-{digest}"
 
 
-def card_records_to_parquet(cards: list, partition_date: str) -> tuple[bytes, int]:
-    now = datetime.now(timezone.utc)
+def card_records_to_parquet(
+    cards: list, partition_date: str
+) -> tuple[bytes, int]:
+    """Serialize CardRecord list to a parquet blob.
+
+    Changes from the 2026-06-10 pinned contract:
+    - partition_date is written as a real column (was ignored).
+    - scraped_at is sourced from partition_date for purity.
+    """
+    if not partition_date:
+        raise ValueError("partition_date is required")
+    scraped_at_iso = f"{partition_date}T00:00:00+00:00"
     rows = [
         {
-            "card_id": card.card_id,
-            "card_version": card.card_version or "",
-            "card_name": card.card_name,
-            "set_code": card.set_code,
-            "rarity": card.rarity or "",
-            "card_type": card.card_type,
-            "attribute": card.attribute or "",
-            "power": card.power or 0,
-            "cost": card.cost or 0,
-            "color": card.color or "",
-            "source_url": card.source_url,
-            "scraped_at": now.isoformat(),
+            "card_id": c.card_id,
+            "card_version": c.card_version or "",
+            "card_name": c.card_name,
+            "set_code": c.set_code,
+            "rarity": c.rarity or "",
+            "card_type": c.card_type,
+            "attribute": c.attribute or "",
+            "power": c.power or 0,
+            "cost": c.cost or 0,
+            "color": c.color or "",
+            "source_url": c.source_url,
+            "scraped_at": scraped_at_iso,
+            "partition_date": partition_date,
         }
-        for card in cards
+        for c in cards
     ]
     table = pa.Table.from_pylist(rows)
     buffer = io.BytesIO()

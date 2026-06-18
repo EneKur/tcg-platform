@@ -92,6 +92,7 @@ def test_cards_single_card_writes_all_required_columns():
         "color",
         "source_url",
         "scraped_at",
+        "partition_date",
     ]
 
 
@@ -115,32 +116,35 @@ def test_cards_optional_fields_default_to_empty_string_or_zero():
     assert row["color"] == ""
 
 
-def test_cards_scraped_at_stamped_at_call_time():
-    before = datetime.now(timezone.utc)
+def test_cards_scraped_at_derived_from_partition_date():
     bytes_out, _ = card_records_to_parquet([_make_card()], "2026-06-10")
-    after = datetime.now(timezone.utc)
-
     table = pq.read_table(BufferReader(bytes_out))
-    stamped = datetime.fromisoformat(table.to_pylist()[0]["scraped_at"])
-    slack = __import__("datetime").timedelta(seconds=1)
-    assert before - slack <= stamped <= after + slack
+    assert table.column("scraped_at").to_pylist() == ["2026-06-10T00:00:00+00:00"]
 
 
-def test_cards_partition_date_argument_is_ignored():
-    card = _make_card()
-    bytes_a, count_a = card_records_to_parquet([card], "2026-06-10")
-    bytes_b, count_b = card_records_to_parquet([card], "2099-12-31")
-    assert count_a == count_b == 1
-
+def test_cards_scraped_at_is_pure_across_calls():
+    """Two calls with the same partition_date must produce the same scraped_at."""
+    bytes_a, _ = card_records_to_parquet([_make_card()], "2026-06-10")
+    bytes_b, _ = card_records_to_parquet([_make_card()], "2026-06-10")
     table_a = pq.read_table(BufferReader(bytes_a))
     table_b = pq.read_table(BufferReader(bytes_b))
-    assert table_a.column_names == table_b.column_names
-    row_a = table_a.to_pylist()[0]
-    row_b = table_b.to_pylist()[0]
-    for col in table_a.column_names:
-        if col == "scraped_at":
-            continue
-        assert row_a[col] == row_b[col], f"{col} differs"
+    assert (
+        table_a.column("scraped_at").to_pylist()
+        == table_b.column("scraped_at").to_pylist()
+    )
+
+
+def test_cards_partition_date_column_reflects_arg():
+    bytes_out, _ = card_records_to_parquet([_make_card()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "partition_date" in table.column_names
+    assert table.column("partition_date").to_pylist() == ["2026-06-10"]
+
+
+def test_cards_missing_partition_date_raises():
+    import pytest
+    with pytest.raises(ValueError, match="partition_date is required"):
+        card_records_to_parquet([_make_card()], "")
 
 
 def test_cards_returned_row_count_matches_input():
