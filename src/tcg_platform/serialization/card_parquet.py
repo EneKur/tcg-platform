@@ -22,6 +22,7 @@ def derive_event_id(source_url: str) -> str:
     """
     if not source_url:
         return "unknown-0"
+    source_url = source_url.split("?", 1)[0]
     if LIMITLESS_HOST in source_url:
         parts = source_url.rstrip("/").split("/")
         return f"limitless-{parts[-1].upper()}"

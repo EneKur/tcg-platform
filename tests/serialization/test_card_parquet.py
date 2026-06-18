@@ -260,3 +260,31 @@ def test_derive_event_id_uses_md5_not_python_hash():
         + __import__("hashlib").md5(url.encode()).hexdigest()[:8]
     )
     assert derive_event_id(url) == expected
+
+
+def test_derive_event_id_strips_query_string_from_limitless_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert (
+        derive_event_id("https://onepiece.limitlesstcg.com/cards/OP01-001?v=1")
+        == "limitless-OP01-001"
+    )
+
+
+def test_derive_event_id_strips_trailing_slash_and_query():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert (
+        derive_event_id("https://onepiece.limitlesstcg.com/cards/OP01-001/?v=1")
+        == "limitless-OP01-001"
+    )
+
+
+def test_derive_event_id_handles_none_input():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id(None) == "unknown-0"
+
+
+def test_derive_event_id_malformed_ebay_falls_through_to_unknown():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    result = derive_event_id("https://www.ebay.de/itm/not-a-number")
+    assert result.startswith("unknown-")
+    assert result != "unknown-0"
