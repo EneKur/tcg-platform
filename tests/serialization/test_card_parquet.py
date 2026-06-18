@@ -156,24 +156,69 @@ def test_prices_empty_input_returns_zero_row_parquet():
     assert table.num_rows == 0
 
 
-def test_prices_event_id_column_is_always_empty_string():
+def test_prices_single_price_writes_all_required_columns():
     bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
     table = pq.read_table(BufferReader(bytes_out))
-    assert "event_id" in table.column_names
-    assert table.column("event_id").to_pylist() == [""]
+    assert table.column_names == [
+        "event_id",
+        "card_id",
+        "card_version",
+        "event_type",
+        "price",
+        "currency",
+        "sold_date",
+        "scraped_from",
+        "source",
+        "source_url",
+        "language",
+        "scraped_at",
+        "image_url",
+        "local_image_path",
+        "title",
+        "partition_date",
+    ]
 
 
-def test_prices_image_url_and_local_image_path_are_dropped():
+def test_prices_event_id_derived_from_limitless_url():
+    bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("event_id").to_pylist() == ["limitless-OP01-001"]
+
+
+def test_prices_event_id_derived_from_ebay_url():
+    price = _make_price(
+        source_url="https://www.ebay.de/itm/123456789",
+    )
+    bytes_out, _ = price_records_to_parquet([price], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("event_id").to_pylist() == ["123456789"]
+
+
+def test_prices_image_url_passes_through():
     bytes_out, _ = price_records_to_parquet(
-        [_make_price(
-            image_url="https://cdn.example.com/x.webp",
-            local_image_path="cards/OP01/x.webp",
-        )],
+        [_make_price(image_url="https://cdn.example.com/x.webp")],
         "2026-06-10",
     )
     table = pq.read_table(BufferReader(bytes_out))
-    assert "image_url" not in table.column_names
-    assert "local_image_path" not in table.column_names
+    assert "image_url" in table.column_names
+    assert table.column("image_url").to_pylist() == ["https://cdn.example.com/x.webp"]
+
+
+def test_prices_local_image_path_passes_through():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(local_image_path="cards/OP01/x.webp")],
+        "2026-06-10",
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "local_image_path" in table.column_names
+    assert table.column("local_image_path").to_pylist() == ["cards/OP01/x.webp"]
+
+
+def test_prices_partition_date_column_reflects_arg():
+    bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "partition_date" in table.column_names
+    assert table.column("partition_date").to_pylist() == ["2026-06-10"]
 
 
 def test_prices_title_defaults_to_empty_string():

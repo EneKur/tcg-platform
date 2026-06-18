@@ -59,24 +59,51 @@ def card_records_to_parquet(cards: list, partition_date: str) -> tuple[bytes, in
     return buffer.getvalue(), len(rows)
 
 
-def price_records_to_parquet(prices: list, partition_date: str) -> tuple[bytes, int]:
-    now = datetime.now(timezone.utc)
+def price_records_to_parquet(
+    prices: list,
+    partition_date: str,
+    local_image_path_map: dict[str, str] | None = None,
+) -> tuple[bytes, int]:
+    """Serialize PriceRecord list to a parquet blob.
+
+    Changes from the 2026-06-10 pinned contract:
+    - event_id is derived from source_url (not always "").
+    - image_url and local_image_path are passed through (not dropped).
+    - local_image_path is backfilled from `local_image_path_map`
+      (a {card_id: 'cards/{set}/{card_id}.webp'} dict) when the
+      PriceRecord's own local_image_path is empty. Caller computes
+      the map from MinIO `list_objects(prefix='cards/')`. The helper
+      stays pure.
+    - partition_date is written as a real column (was ignored).
+    - scraped_at is sourced from partition_date for purity.
+    """
+    if not partition_date:
+        raise ValueError("partition_date is required")
+    scraped_at_iso = f"{partition_date}T00:00:00+00:00"
+    path_map = local_image_path_map or {}
     rows = [
         {
-            "event_id": "",
-            "card_id": price.card_id,
-            "card_version": price.card_version or "",
-            "event_type": price.event_type,
-            "price": price.price,
-            "currency": price.currency,
-            "sold_date": price.sold_date or "",
-            "scraped_from": price.scraped_from,
-            "source": price.source,
-            "source_url": price.source_url,
-            "scraped_at": now.isoformat(),
-            "title": getattr(price, "title", None) or "",
+            "event_id": derive_event_id(p.source_url),
+            "card_id": p.card_id,
+            "card_version": p.card_version or "",
+            "event_type": p.event_type,
+            "price": p.price,
+            "currency": p.currency,
+            "sold_date": p.sold_date or "",
+            "scraped_from": p.scraped_from,
+            "source": p.source,
+            "source_url": p.source_url,
+            "language": getattr(p, "language", "EN") or "EN",
+            "scraped_at": scraped_at_iso,
+            "image_url": getattr(p, "image_url", None) or "",
+            "local_image_path": (
+                getattr(p, "local_image_path", None)
+                or path_map.get(p.card_id, "")
+            ),
+            "title": getattr(p, "title", None) or "",
+            "partition_date": partition_date,
         }
-        for price in prices
+        for p in prices
     ]
     table = pa.Table.from_pylist(rows)
     buffer = io.BytesIO()
