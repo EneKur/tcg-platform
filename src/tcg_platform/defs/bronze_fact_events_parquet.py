@@ -1,7 +1,10 @@
 import dagster as dg
 
 from tcg_platform.resources.minio_client import MinioClientResource
-from tcg_platform.serialization.card_parquet import price_records_to_parquet
+from tcg_platform.serialization.card_parquet import (
+    build_local_image_path_map,
+    price_records_to_parquet,
+)
 
 
 FACT_EVENTS_PATH = "bronze/fact_events/partition_date={date}/prices.parquet"
@@ -17,7 +20,10 @@ def bronze_fact_events_parquet(
     from datetime import datetime, timezone
 
     partition_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    price_bytes, num_prices = price_records_to_parquet(limitless_op_prices, partition_date)
+    image_path_map = build_local_image_path_map(minio_client)
+    price_bytes, num_prices = price_records_to_parquet(
+        limitless_op_prices, partition_date, image_path_map,
+    )
 
     object_name = FACT_EVENTS_PATH.format(date=partition_date)
     minio_client.put_object(
