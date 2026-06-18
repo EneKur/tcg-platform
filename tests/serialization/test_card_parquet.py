@@ -214,6 +214,40 @@ def test_prices_local_image_path_passes_through():
     assert table.column("local_image_path").to_pylist() == ["cards/OP01/x.webp"]
 
 
+def test_prices_local_image_path_backfilled_from_map_when_record_empty():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(local_image_path="")],
+        "2026-06-10",
+        local_image_path_map={"OP01-001": "cards/OP01/OP01-001.webp"},
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("local_image_path").to_pylist() == [
+        "cards/OP01/OP01-001.webp"
+    ]
+
+
+def test_prices_local_image_path_record_value_beats_map():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(local_image_path="cards/explicit/explicit.webp")],
+        "2026-06-10",
+        local_image_path_map={"OP01-001": "cards/OP01/OP01-001.webp"},
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("local_image_path").to_pylist() == [
+        "cards/explicit/explicit.webp"
+    ]
+
+
+def test_prices_local_image_path_empty_when_card_id_not_in_map():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(card_id="OP99-999", local_image_path="")],
+        "2026-06-10",
+        local_image_path_map={"OP01-001": "cards/OP01/OP01-001.webp"},
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("local_image_path").to_pylist() == [""]
+
+
 def test_prices_partition_date_column_reflects_arg():
     bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
     table = pq.read_table(BufferReader(bytes_out))
