@@ -92,6 +92,7 @@ def test_cards_single_card_writes_all_required_columns():
         "color",
         "source_url",
         "scraped_at",
+        "partition_date",
     ]
 
 
@@ -115,32 +116,35 @@ def test_cards_optional_fields_default_to_empty_string_or_zero():
     assert row["color"] == ""
 
 
-def test_cards_scraped_at_stamped_at_call_time():
-    before = datetime.now(timezone.utc)
+def test_cards_scraped_at_derived_from_partition_date():
     bytes_out, _ = card_records_to_parquet([_make_card()], "2026-06-10")
-    after = datetime.now(timezone.utc)
-
     table = pq.read_table(BufferReader(bytes_out))
-    stamped = datetime.fromisoformat(table.to_pylist()[0]["scraped_at"])
-    slack = __import__("datetime").timedelta(seconds=1)
-    assert before - slack <= stamped <= after + slack
+    assert table.column("scraped_at").to_pylist() == ["2026-06-10T00:00:00+00:00"]
 
 
-def test_cards_partition_date_argument_is_ignored():
-    card = _make_card()
-    bytes_a, count_a = card_records_to_parquet([card], "2026-06-10")
-    bytes_b, count_b = card_records_to_parquet([card], "2099-12-31")
-    assert count_a == count_b == 1
-
+def test_cards_scraped_at_is_pure_across_calls():
+    """Two calls with the same partition_date must produce the same scraped_at."""
+    bytes_a, _ = card_records_to_parquet([_make_card()], "2026-06-10")
+    bytes_b, _ = card_records_to_parquet([_make_card()], "2026-06-10")
     table_a = pq.read_table(BufferReader(bytes_a))
     table_b = pq.read_table(BufferReader(bytes_b))
-    assert table_a.column_names == table_b.column_names
-    row_a = table_a.to_pylist()[0]
-    row_b = table_b.to_pylist()[0]
-    for col in table_a.column_names:
-        if col == "scraped_at":
-            continue
-        assert row_a[col] == row_b[col], f"{col} differs"
+    assert (
+        table_a.column("scraped_at").to_pylist()
+        == table_b.column("scraped_at").to_pylist()
+    )
+
+
+def test_cards_partition_date_column_reflects_arg():
+    bytes_out, _ = card_records_to_parquet([_make_card()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "partition_date" in table.column_names
+    assert table.column("partition_date").to_pylist() == ["2026-06-10"]
+
+
+def test_cards_missing_partition_date_raises():
+    import pytest
+    with pytest.raises(ValueError, match="partition_date is required"):
+        card_records_to_parquet([_make_card()], "")
 
 
 def test_cards_returned_row_count_matches_input():
@@ -156,24 +160,103 @@ def test_prices_empty_input_returns_zero_row_parquet():
     assert table.num_rows == 0
 
 
-def test_prices_event_id_column_is_always_empty_string():
+def test_prices_single_price_writes_all_required_columns():
     bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
     table = pq.read_table(BufferReader(bytes_out))
-    assert "event_id" in table.column_names
-    assert table.column("event_id").to_pylist() == [""]
+    assert table.column_names == [
+        "event_id",
+        "card_id",
+        "card_version",
+        "event_type",
+        "price",
+        "currency",
+        "sold_date",
+        "scraped_from",
+        "source",
+        "source_url",
+        "language",
+        "scraped_at",
+        "image_url",
+        "local_image_path",
+        "title",
+        "partition_date",
+    ]
 
 
-def test_prices_image_url_and_local_image_path_are_dropped():
+def test_prices_event_id_derived_from_limitless_url():
+    bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("event_id").to_pylist() == ["limitless-OP01-001"]
+
+
+def test_prices_event_id_derived_from_ebay_url():
+    price = _make_price(
+        source_url="https://www.ebay.de/itm/123456789",
+    )
+    bytes_out, _ = price_records_to_parquet([price], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("event_id").to_pylist() == ["123456789"]
+
+
+def test_prices_image_url_passes_through():
     bytes_out, _ = price_records_to_parquet(
-        [_make_price(
-            image_url="https://cdn.example.com/x.webp",
-            local_image_path="cards/OP01/x.webp",
-        )],
+        [_make_price(image_url="https://cdn.example.com/x.webp")],
         "2026-06-10",
     )
     table = pq.read_table(BufferReader(bytes_out))
-    assert "image_url" not in table.column_names
-    assert "local_image_path" not in table.column_names
+    assert "image_url" in table.column_names
+    assert table.column("image_url").to_pylist() == ["https://cdn.example.com/x.webp"]
+
+
+def test_prices_local_image_path_passes_through():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(local_image_path="cards/OP01/x.webp")],
+        "2026-06-10",
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "local_image_path" in table.column_names
+    assert table.column("local_image_path").to_pylist() == ["cards/OP01/x.webp"]
+
+
+def test_prices_local_image_path_backfilled_from_map_when_record_empty():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(local_image_path="")],
+        "2026-06-10",
+        local_image_path_map={"OP01-001": "cards/OP01/OP01-001.webp"},
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("local_image_path").to_pylist() == [
+        "cards/OP01/OP01-001.webp"
+    ]
+
+
+def test_prices_local_image_path_record_value_beats_map():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(local_image_path="cards/explicit/explicit.webp")],
+        "2026-06-10",
+        local_image_path_map={"OP01-001": "cards/OP01/OP01-001.webp"},
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("local_image_path").to_pylist() == [
+        "cards/explicit/explicit.webp"
+    ]
+
+
+def test_prices_local_image_path_empty_when_card_id_not_in_map():
+    bytes_out, _ = price_records_to_parquet(
+        [_make_price(card_id="OP99-999", local_image_path="")],
+        "2026-06-10",
+        local_image_path_map={"OP01-001": "cards/OP01/OP01-001.webp"},
+    )
+    table = pq.read_table(BufferReader(bytes_out))
+    assert table.column("local_image_path").to_pylist() == [""]
+
+
+def test_prices_partition_date_column_reflects_arg():
+    bytes_out, _ = price_records_to_parquet([_make_price()], "2026-06-10")
+    table = pq.read_table(BufferReader(bytes_out))
+    assert "partition_date" in table.column_names
+    assert table.column("partition_date").to_pylist() == ["2026-06-10"]
 
 
 def test_prices_title_defaults_to_empty_string():
@@ -215,3 +298,108 @@ def test_prices_returned_row_count_matches_input():
     prices = [_make_price(card_id=f"OP01-{i:03d}") for i in range(1, 4)]
     _, count = price_records_to_parquet(prices, "2026-06-10")
     assert count == 3
+
+
+def test_derive_event_id_for_ebay_de_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id("https://www.ebay.de/itm/123456789") == "123456789"
+
+
+def test_derive_event_id_for_ebay_uk_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id("https://www.ebay.co.uk/itm/987654321") == "987654321"
+
+
+def test_derive_event_id_for_limitless_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert (
+        derive_event_id("https://onepiece.limitlesstcg.com/cards/OP01-001")
+        == "limitless-OP01-001"
+    )
+
+
+def test_derive_event_id_for_unknown_url_is_deterministic():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    url = "https://example.com/some/odd/path"
+    first = derive_event_id(url)
+    second = derive_event_id(url)
+    assert first == second
+    assert first.startswith("unknown-")
+    assert len(first) == len("unknown-") + 8
+
+
+def test_derive_event_id_for_empty_string_returns_unknown_zero():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id("") == "unknown-0"
+
+
+def test_derive_event_id_uses_md5_not_python_hash():
+    """Python's hash() is randomized per process; unknown URLs must use
+    hashlib.md5 for cross-run stability."""
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    url = "https://example.com/some/odd/path"
+    expected = (
+        "unknown-"
+        + __import__("hashlib").md5(url.encode()).hexdigest()[:8]
+    )
+    assert derive_event_id(url) == expected
+
+
+def test_derive_event_id_strips_query_string_from_limitless_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert (
+        derive_event_id("https://onepiece.limitlesstcg.com/cards/OP01-001?v=1")
+        == "limitless-OP01-001"
+    )
+
+
+def test_derive_event_id_strips_trailing_slash_and_query():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert (
+        derive_event_id("https://onepiece.limitlesstcg.com/cards/OP01-001/?v=1")
+        == "limitless-OP01-001"
+    )
+
+
+def test_derive_event_id_handles_none_input():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id(None) == "unknown-0"
+
+
+def test_derive_event_id_malformed_ebay_falls_through_to_unknown():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    result = derive_event_id("https://www.ebay.de/itm/not-a-number")
+    assert result.startswith("unknown-")
+    assert result != "unknown-0"
+
+
+def test_build_local_image_path_map_with_minio():
+    """Mock MinioClientResource to return known card paths and verify the
+    map is {card_id_upper: object_name}."""
+    from unittest.mock import MagicMock
+    from tcg_platform.serialization.card_parquet import (
+        build_local_image_path_map,
+    )
+    mock_client = MagicMock()
+    mock_client.list_objects.return_value = [
+        "cards/OP01/OP01-001.webp",
+        "cards/OP01/OP01-002.webp",
+        "cards/ST10/ST10-001_v1.webp",
+    ]
+    result = build_local_image_path_map(mock_client)
+    assert result == {
+        "OP01-001": "cards/OP01/OP01-001.webp",
+        "OP01-002": "cards/OP01/OP01-002.webp",
+        "ST10-001": "cards/ST10/ST10-001_v1.webp",
+    }
+
+
+def test_build_local_image_path_map_empty():
+    """Empty MinIO returns empty dict."""
+    from unittest.mock import MagicMock
+    from tcg_platform.serialization.card_parquet import (
+        build_local_image_path_map,
+    )
+    mock_client = MagicMock()
+    mock_client.list_objects.return_value = []
+    assert build_local_image_path_map(mock_client) == {}
