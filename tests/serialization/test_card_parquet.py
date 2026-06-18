@@ -215,3 +215,48 @@ def test_prices_returned_row_count_matches_input():
     prices = [_make_price(card_id=f"OP01-{i:03d}") for i in range(1, 4)]
     _, count = price_records_to_parquet(prices, "2026-06-10")
     assert count == 3
+
+
+def test_derive_event_id_for_ebay_de_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id("https://www.ebay.de/itm/123456789") == "123456789"
+
+
+def test_derive_event_id_for_ebay_uk_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id("https://www.ebay.co.uk/itm/987654321") == "987654321"
+
+
+def test_derive_event_id_for_limitless_url():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert (
+        derive_event_id("https://onepiece.limitlesstcg.com/cards/OP01-001")
+        == "limitless-OP01-001"
+    )
+
+
+def test_derive_event_id_for_unknown_url_is_deterministic():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    url = "https://example.com/some/odd/path"
+    first = derive_event_id(url)
+    second = derive_event_id(url)
+    assert first == second
+    assert first.startswith("unknown-")
+    assert len(first) == len("unknown-") + 8
+
+
+def test_derive_event_id_for_empty_string_returns_unknown_zero():
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    assert derive_event_id("") == "unknown-0"
+
+
+def test_derive_event_id_uses_md5_not_python_hash():
+    """Python's hash() is randomized per process; unknown URLs must use
+    hashlib.md5 for cross-run stability."""
+    from tcg_platform.serialization.card_parquet import derive_event_id
+    url = "https://example.com/some/odd/path"
+    expected = (
+        "unknown-"
+        + __import__("hashlib").md5(url.encode()).hexdigest()[:8]
+    )
+    assert derive_event_id(url) == expected
