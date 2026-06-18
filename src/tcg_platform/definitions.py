@@ -77,6 +77,7 @@ limitless_pipeline = define_asset_job(
     name="limitless_pipeline",
     selection=[
         "limitless_op_cards",
+        "limitless_op_prices",
         "bronze_cardlist_parquet",
         "bronze_fact_events_parquet",
     ],
