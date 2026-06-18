@@ -73,6 +73,16 @@ sync_card_images_job = define_asset_job(
     description="Diff Limitless catalog against tcg-bronze/cards/, download missing images.",
 )
 
+limitless_pipeline = define_asset_job(
+    name="limitless_pipeline",
+    selection=[
+        "limitless_op_cards",
+        "bronze_cardlist_parquet",
+        "bronze_fact_events_parquet",
+    ],
+    description="Scrape Limitless TCG catalog + write bronze cardlist + fact_events parquets.",
+)
+
 ebay_de_raw_to_bronze_job = define_asset_job(
     name="ebay_de_raw_to_bronze",
     selection=["scrape_ebay_de_raw", "transform_ebay_de_to_bronze"],
@@ -112,6 +122,7 @@ def defs():
             silver_eu_job,
             complete_eu_pipeline,
             sync_card_images_job,
+            limitless_pipeline,  # NEW
             reconcile_quarantine_de_job,
             reconcile_quarantine_uk_job,
             # NEW for M9-T1
