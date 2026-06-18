@@ -226,6 +226,8 @@ def build_local_image_path_map(minio_client) -> dict[str, str]:
 
 The caller (`bronze_fact_events_parquet` asset) calls this once
 before `price_records_to_parquet` and passes the map in.
+`minio_client.list_objects(bucket, prefix)` returns `list[str]`
+of object names (see `src/tcg_platform/resources/minio_client.py:90-97`).
 
 ### Change 5: `bronze_fact_events_parquet` asset wires the MinIO lookup
 
