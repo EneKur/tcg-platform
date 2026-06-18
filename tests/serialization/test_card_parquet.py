@@ -371,3 +371,35 @@ def test_derive_event_id_malformed_ebay_falls_through_to_unknown():
     result = derive_event_id("https://www.ebay.de/itm/not-a-number")
     assert result.startswith("unknown-")
     assert result != "unknown-0"
+
+
+def test_build_local_image_path_map_with_minio():
+    """Mock MinioClientResource to return known card paths and verify the
+    map is {card_id_upper: object_name}."""
+    from unittest.mock import MagicMock
+    from tcg_platform.serialization.card_parquet import (
+        build_local_image_path_map,
+    )
+    mock_client = MagicMock()
+    mock_client.list_objects.return_value = [
+        "cards/OP01/OP01-001.webp",
+        "cards/OP01/OP01-002.webp",
+        "cards/ST10/ST10-001_v1.webp",
+    ]
+    result = build_local_image_path_map(mock_client)
+    assert result == {
+        "OP01-001": "cards/OP01/OP01-001.webp",
+        "OP01-002": "cards/OP01/OP01-002.webp",
+        "ST10-001": "cards/ST10/ST10-001_v1.webp",
+    }
+
+
+def test_build_local_image_path_map_empty():
+    """Empty MinIO returns empty dict."""
+    from unittest.mock import MagicMock
+    from tcg_platform.serialization.card_parquet import (
+        build_local_image_path_map,
+    )
+    mock_client = MagicMock()
+    mock_client.list_objects.return_value = []
+    assert build_local_image_path_map(mock_client) == {}

@@ -119,3 +119,29 @@ def price_records_to_parquet(
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
     return buffer.getvalue(), len(rows)
+
+
+def build_local_image_path_map(minio_client) -> dict[str, str]:
+    """Read tcg-bronze/cards/ from MinIO and return a {card_id: path} map.
+
+    The serializer uses this to backfill `local_image_path` for
+    Limitless rows. Empty dict if no images are present.
+
+    `minio_client.list_objects(bucket, prefix)` returns a list of
+    object name strings (see `MinioClientResource.list_objects`).
+    """
+    out: dict[str, str] = {}
+    for obj_name in minio_client.list_objects("tcg-bronze", prefix="cards/"):
+        parts = obj_name.split("/")
+        if len(parts) != 3:
+            continue
+        filename = parts[2]
+        for suffix in ("_v1", "_v2", "_v3", "_v4"):
+            if filename.endswith(suffix + ".webp"):
+                filename = filename[: -(len(suffix) + 5)]
+                break
+        else:
+            if filename.endswith(".webp"):
+                filename = filename[:-5]
+        out[filename.upper()] = obj_name
+    return out
