@@ -29,7 +29,7 @@ RAW_BUCKET = "tcg-raw"
 def _enumerate_raw_keys(raw_minio_client: MinioClientResource, region: str) -> list[str]:
     """List raw HTML object names for a region. Returns sorted keys."""
     prefix = f"ebay/{region.upper()}/"
-    keys = raw_minio_client.client.list_objects(RAW_BUCKET, prefix=prefix, recursive=True)
+    keys = raw_minio_client.list_objects(RAW_BUCKET, prefix=prefix)
     return sorted(k for k in keys if k.endswith(".html"))
 
 

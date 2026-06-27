@@ -58,6 +58,9 @@ class _FakeRawClient:
         self.got.append((bucket_name, object_name))
         return self._html_bytes
 
+    def list_objects(self, bucket_name, prefix=""):
+        return list(self.keys)
+
     @property
     def client(self):
         return self._client
@@ -196,9 +199,37 @@ def test_replay_job_resolves_with_both_assets():
     """The Dagster job selects both DE + UK assets for parallel execution."""
     from tcg_platform.definitions import defs
     resolved = defs.load_fn()
-    job_def = resolved.resolve_job_def("replay_bronze_from_raw_job")
+    job_def = resolved.get_job_def("replay_bronze_from_raw_job")
     assert job_def.name == "replay_bronze_from_raw_job"
     # Both assets must be in the selection
     keys = {ak.to_user_string() for ak in job_def.asset_layer.selected_asset_keys}
     assert "replay_bronze_from_raw_de" in keys
     assert "replay_bronze_from_raw_uk" in keys
+
+
+def test_enumerate_uses_wrapper_not_raw_sdk():
+    """Production code must call minio_client.list_objects (wrapper),
+    not minio_client.client.list_objects (raw SDK returning Object instances).
+
+    Regression: 2026-06-27 — production called .client.list_objects and
+    crashed with AttributeError on Object.endswith.
+    """
+    raw = _FakeRawClient(keys=["ebay/DE/1.html"])
+    bronze = _FakeBronzeClient()
+    sqlite = _FakeSqliteClient()
+    ctx = _build_ctx(raw, bronze, sqlite, mode="fill")
+
+    # The wrapper method must exist and return list[str].
+    # If the wrapper is missing in production code's path, _enumerate_raw_keys
+    # would call .client.list_objects which returns Object instances in prod,
+    # and the .endswith() filter would raise AttributeError.
+    assert callable(getattr(raw, "list_objects", None)), (
+        "wrapper method missing — production code can't call it"
+    )
+    result = raw.list_objects("tcg-raw", prefix="ebay/DE/")
+    assert all(isinstance(k, str) for k in result)
+    assert result == ["ebay/DE/1.html"]
+
+    # End-to-end: asset runs without AttributeError.
+    result_asset = replay_bronze_from_raw_de(ctx)
+    assert result_asset.metadata["wrote_parquet"] == 1
