@@ -259,3 +259,76 @@ def test_parse_failure_increments_parse_failed_and_continues():
     assert counts["skipped_empty"] == 1
     assert counts["wrote_parquet"] == 0
     assert counts["wrote_sqlite"] == 0
+
+
+def test_sold_date_from_caller_overrides_empty_rec_sold_date():
+    """Caller passes sold_date; rec.sold_date is empty → use caller's."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="fill",
+        sold_date="2026-06-27",
+    )
+    insert_params = sqlite.inserts[0]
+    sold_date_idx = 5  # (card_id, card_version, event_type, price, currency, sold_date, ...)
+    assert insert_params[sold_date_idx] == "2026-06-27"
+
+
+def test_sold_date_from_caller_does_not_override_rec_sold_date():
+    """Caller passes sold_date; rec.sold_date is set → keep rec's value."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page as real_parser
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    # Monkey-patch the parser to inject a sold_date on the returned record
+    def patched(html, url, scraped_at):
+        recs = real_parser(html, url, scraped_at)
+        for r in recs:
+            r.sold_date = "2026-06-01"  # parser-derived
+        return recs
+
+    transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=patched,
+        mode="fill",
+        sold_date="2026-06-27",  # caller-provided — should NOT override
+    )
+    insert_params = sqlite.inserts[0]
+    sold_date_idx = 5
+    assert insert_params[sold_date_idx] == "2026-06-01"
+
+
+def test_sold_date_none_leaves_rec_sold_date_alone():
+    """Caller passes None → don't touch rec.sold_date (might be empty, might be set)."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="fill",
+        sold_date=None,
+    )
+    # The parser may or may not set sold_date on rec; we only assert
+    # the insert succeeded and didn't crash.
+    assert len(sqlite.inserts) == 1
