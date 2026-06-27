@@ -34,6 +34,9 @@ from tcg_platform.defs.reconcile_quarantine import (
     reconcile_quarantine_de_job,
     reconcile_quarantine_uk_job,
 )
+from tcg_platform.defs.replay_bronze_from_raw import (
+    replay_bronze_from_raw_job,
+)
 
 
 exchange_rates_job = define_asset_job(
@@ -132,6 +135,7 @@ def defs():
             backfill_raw_html_de_job,
             backfill_raw_html_uk_job,
             exchange_rates_job,
+            replay_bronze_from_raw_job,
         ],
         sensors=[backfill_de_sensor, backfill_uk_sensor],
         resources={
