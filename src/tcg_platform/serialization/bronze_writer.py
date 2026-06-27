@@ -62,6 +62,7 @@ def transform_one_item(
     upper = region.upper()
     parquet_key = f"sold_data/{upper}/{event_id}.parquet"
 
+    prior_row_existed = False
     # fill mode: skip if parquet already exists
     if mode == "fill":
         try:
@@ -75,6 +76,7 @@ def transform_one_item(
         try:
             bronze_minio_client.client.stat_object(BRONZE_BUCKET, parquet_key)
             bronze_minio_client.client.remove_object(BRONZE_BUCKET, parquet_key)
+            prior_row_existed = True
         except Exception:
             pass
 
@@ -117,7 +119,9 @@ def transform_one_item(
         )
         counts["wrote_parquet"] += 1
 
-        if not _is_proxy_title(rec.card_id):
+        if not _is_proxy_title(rec.card_id) and not (
+            mode == "overwrite" and prior_row_existed
+        ):
             try:
                 sqlite_client.execute(
                     """
