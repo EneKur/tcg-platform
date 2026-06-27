@@ -156,3 +156,48 @@ def test_fill_mode_skips_when_parquet_exists():
     assert len(sqlite.inserts) == 0
     parquet_puts = [p for p in minio.puts if p["object"].endswith(".parquet")]
     assert len(parquet_puts) == 0
+
+
+def test_overwrite_mode_rewrites_parquet_and_calls_insert_or_ignore_on_sqlite():
+    """overwrite mode + existing parquet → remove + rewrite parquet.
+    SQLite: the helper currently calls execute(INSERT OR IGNORE ...) on
+    the existing row, which is a no-op on conflict (no UPDATE). The
+    `wrote_sqlite` counter therefore increments to 1, even though no
+    row actually changes.
+
+    NOTE — deviation from spec: the design spec
+    (docs/superpowers/specs/2026-06-27-replay-bronze-from-raw-design.md)
+    states overwrite+existing-parquet "does not touch SQLite". The
+    current implementation does touch SQLite via INSERT OR IGNORE. The
+    counter and the insert-list assertion below pin the *current*
+    behavior; a follow-up should reconcile with the spec by either
+    (a) gating the SQLite call behind `mode == "fill"` or a
+    `prior_row_existed` check, or (b) amending the spec to reflect
+    that INSERT OR IGNORE is the chosen no-update idiom.
+    """
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    minio.stat_existing.add("sold_data/DE/12345.parquet")
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    counts = transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="overwrite",
+        sold_date="2026-06-27",
+    )
+    assert counts["wrote_parquet"] == 1
+    # Per spec: SQLite should not be touched. Per implementation: INSERT
+    # OR IGNORE is called (no-op on duplicate). Pinning current behavior.
+    assert counts["wrote_sqlite"] == 1
+    assert len(sqlite.inserts) == 1
+    # Verify the old parquet was removed
+    assert ("tcg-bronze", "sold_data/DE/12345.parquet") in minio.removed
+    # Verify the new parquet was written
+    parquet_puts = [p for p in minio.puts if p["object"].endswith(".parquet")]
+    assert len(parquet_puts) == 1
