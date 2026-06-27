@@ -201,3 +201,28 @@ def test_overwrite_mode_rewrites_parquet_and_calls_insert_or_ignore_on_sqlite():
     # Verify the new parquet was written
     parquet_puts = [p for p in minio.puts if p["object"].endswith(".parquet")]
     assert len(parquet_puts) == 1
+
+
+def test_overwrite_mode_writes_parquet_and_sqlite_when_no_existing():
+    """overwrite mode + no prior parquet → behaves like fill-on-new
+    (write parquet + SQLite INSERT). No prior row to preserve."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    counts = transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="overwrite",
+        sold_date="2026-06-27",
+    )
+    assert counts["wrote_parquet"] == 1
+    assert counts["wrote_sqlite"] == 1
+    assert len(sqlite.inserts) == 1
+    # No removal happened (parquet didn't exist before)
+    assert len(minio.removed) == 0
