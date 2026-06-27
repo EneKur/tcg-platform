@@ -146,6 +146,7 @@ Steel cloud APIs       MinIO Parquet            LakeSail (pysail)           (fut
 > **M9-T1 COMPLETE:** `tcg-raw` MinIO bucket holds raw HTML + images + per-run logs. Replay the transformer against `tcg-raw` to fix a parser without re-paying Zyte API costs. See `docs/superpowers/specs/2026-06-11-tcg-raw-layer-design.md` and `log/SESSION_2026-06-11.md`.
 
 - [x] **M9-T1** — tcg-raw bucket, scraper split into network-only + offline transformer, one-time backfill for pre-existing rows.
+- [x] **M9-T2** — `replay_bronze_from_raw_job` (Dagster job selecting `replay_bronze_from_raw_{de,uk}` assets). Two modes via run config: `fill` (skip if bronze parquet exists; write parquet + SQLite row) closes the 150-row raw-no-bronze gap (89 DE + 61 UK); `overwrite` (always re-parse; remove + rewrite parquet; SQLite untouched) enables parser-bug replays without re-paying Zyte API costs. The per-item write contract lives in `tcg_platform.serialization.bronze_writer.transform_one_item` (new pure helper extracted from the live transformer); the existing `transform_ebay_{de,uk}_to_bronze` assets refactored to delegate to the helper in `fill` mode (behavior preserved). 29 UK bronze-without-raw rows cannot be replayed (raw is gone). Spec: `docs/superpowers/specs/2026-06-27-replay-bronze-from-raw-design.md`.
 
 #### Operational notes
 
