@@ -130,3 +130,29 @@ def test_fill_mode_writes_parquet_and_sqlite_when_no_existing_parquet():
     #                    sold_date, scraped_from, source, source_url, ...)
     card_id_idx = 0
     assert insert_params[card_id_idx] == "OP01-001"
+
+
+def test_fill_mode_skips_when_parquet_exists():
+    """fill mode + existing parquet → no writes, skipped_existing=1."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    minio.stat_existing.add("sold_data/DE/12345.parquet")
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    counts = transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="fill",
+        sold_date="2026-06-27",
+    )
+    assert counts["skipped_existing"] == 1
+    assert counts["wrote_parquet"] == 0
+    assert counts["wrote_sqlite"] == 0
+    assert len(sqlite.inserts) == 0
+    parquet_puts = [p for p in minio.puts if p["object"].endswith(".parquet")]
+    assert len(parquet_puts) == 0
