@@ -332,3 +332,48 @@ def test_sold_date_none_leaves_rec_sold_date_alone():
     # The parser may or may not set sold_date on rec; we only assert
     # the insert succeeded and didn't crash.
     assert len(sqlite.inserts) == 1
+
+
+def test_image_path_set_when_provided():
+    """Caller passes image_path → rec.local_image_path is set to it."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path="sold_images/de/12345.jpg",
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="fill",
+        sold_date="2026-06-27",
+    )
+    insert_params = sqlite.inserts[0]
+    local_image_path_idx = 12  # last param in INSERT
+    assert insert_params[local_image_path_idx] == "sold_images/de/12345.jpg"
+
+
+def test_image_path_none_when_not_provided():
+    """Caller passes None → rec.local_image_path is whatever the parser set (empty)."""
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=_good_de_html().encode("utf-8"))
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    transform_one_item(
+        region="DE", event_id="12345",
+        raw_html=_good_de_html(),
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="fill",
+        sold_date="2026-06-27",
+    )
+    insert_params = sqlite.inserts[0]
+    local_image_path_idx = 12
+    # When None, the rec's existing local_image_path is preserved (or empty)
+    assert insert_params[local_image_path_idx] in (None, "")
