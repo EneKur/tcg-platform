@@ -125,3 +125,8 @@ def test_fill_mode_writes_parquet_and_sqlite_when_no_existing_parquet():
     assert len(parquet_puts) == 1
     assert parquet_puts[0]["object"] == "sold_data/DE/12345.parquet"
     assert len(sqlite.inserts) == 1
+    insert_params = sqlite.inserts[0]
+    # Insertion params: (card_id, card_version, event_type, price, currency,
+    #                    sold_date, scraped_from, source, source_url, ...)
+    card_id_idx = 0
+    assert insert_params[card_id_idx] == "OP01-001"

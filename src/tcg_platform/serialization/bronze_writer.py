@@ -34,6 +34,10 @@ def transform_one_item(
 ) -> dict:
     """Write one item's bronze parquet + (optionally) SQLite row.
 
+    `image_path` is caller-supplied: this helper does NOT fetch images from
+    MinIO — the caller is responsible for downloading any image and passing
+    the local path (or `None`) in.
+
     `mode`:
       - "fill": skip if parquet exists; else write parquet + INSERT OR IGNORE SQLite
       - "overwrite": always re-parse; if parquet exists, remove + rewrite;
@@ -56,7 +60,6 @@ def transform_one_item(
     }
 
     upper = region.upper()
-    lower = region.lower()
     parquet_key = f"sold_data/{upper}/{event_id}.parquet"
 
     # fill mode: skip if parquet already exists
