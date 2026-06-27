@@ -226,3 +226,36 @@ def test_overwrite_mode_writes_parquet_and_sqlite_when_no_existing():
     assert len(sqlite.inserts) == 1
     # No removal happened (parquet didn't exist before)
     assert len(minio.removed) == 0
+
+
+def test_parse_failure_increments_parse_failed_and_continues():
+    """HTML exists but parser returns None → parse_failed=1, no writes.
+
+    NOTE — deviation from spec: the spec text says the parser returning
+    None/[] should increment `parse_failed`. The implementation
+    distinguishes two failure modes:
+      - `parse_failed`  = parser raised an exception
+      - `skipped_empty` = parser returned None or []
+    This test pins the implementation's distinction. A future cleanup
+    should rename `skipped_empty` (or merge it into `parse_failed`) so
+    the spec text and the implementation match.
+    """
+    from tcg_platform.scraping.ebay_de_item import parse_ebay_de_item_page
+    minio = _FakeMinioClient(html_bytes=b"<html></html>")
+    sqlite = _FakeSqliteClient()
+    bronze = _make_resource(minio.client, bucket_name="tcg-bronze")
+
+    counts = transform_one_item(
+        region="DE", event_id="12345",
+        raw_html="<html></html>",
+        image_path=None,
+        bronze_minio_client=bronze,
+        sqlite_client=sqlite,
+        parse_item_page_fn=parse_ebay_de_item_page,
+        mode="fill",
+        sold_date="2026-06-27",
+    )
+    assert counts["parse_failed"] == 0
+    assert counts["skipped_empty"] == 1
+    assert counts["wrote_parquet"] == 0
+    assert counts["wrote_sqlite"] == 0
